@@ -1,9 +1,8 @@
 import streamlit as st
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import CharacterTextSplitter
-from langchain_ollama import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_community.vectorstores import FAISS
-from langchain_ollama import OllamaLLM
 import os
 import tempfile
 
@@ -12,24 +11,6 @@ try:
     OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
 except (KeyError, FileNotFoundError):
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-
-# Debug: Show which URL is being used
-st.sidebar.info(f"🔗 Ollama Host: `{OLLAMA_HOST}`")
-
-# Test connection to Ollama
-import requests
-try:
-    response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
-    if response.status_code == 200:
-        st.sidebar.success("✅ Connected to Ollama")
-    else:
-        st.sidebar.error(f"❌ Ollama returned status {response.status_code}")
-except requests.exceptions.Timeout:
-    st.sidebar.error("❌ Connection timeout - Ollama not responding")
-except requests.exceptions.ConnectionError:
-    st.sidebar.error("❌ Connection refused - Ollama URL unreachable")
-except Exception as e:
-    st.sidebar.error(f"❌ Connection error: {str(e)}")
 
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
@@ -49,6 +30,9 @@ st.markdown("""
 # Title and description
 st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
+
+# Show Ollama status
+st.info(f"🔗 **Ollama Host:** `{OLLAMA_HOST}`\n\n**Note:** Railway free tier apps sleep after inactivity. If you see connection errors, your Railway Ollama may be sleeping. Keep the app running or upgrade to paid tier.")
 
 # Initialize session state
 if "retriever" not in st.session_state:
