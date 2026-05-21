@@ -5,7 +5,7 @@ Follow these steps to deploy the Sikh RAG application to GitHub:
 ## 1. Create GitHub Repository
 
 1. Go to [GitHub](https://github.com/new)
-2. Create a new repository named `sikh-rag` (or your preferred name)
+2. Create a new repository named `sikh_rag` (or your preferred name)
 3. **Do NOT** initialize with README, .gitignore, or license (we have these)
 
 ## 2. Initialize Git Locally
