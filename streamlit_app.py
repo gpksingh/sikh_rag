@@ -16,6 +16,21 @@ except (KeyError, FileNotFoundError):
 # Debug: Show which URL is being used
 st.sidebar.info(f"🔗 Ollama Host: `{OLLAMA_HOST}`")
 
+# Test connection to Ollama
+import requests
+try:
+    response = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
+    if response.status_code == 200:
+        st.sidebar.success("✅ Connected to Ollama")
+    else:
+        st.sidebar.error(f"❌ Ollama returned status {response.status_code}")
+except requests.exceptions.Timeout:
+    st.sidebar.error("❌ Connection timeout - Ollama not responding")
+except requests.exceptions.ConnectionError:
+    st.sidebar.error("❌ Connection refused - Ollama URL unreachable")
+except Exception as e:
+    st.sidebar.error(f"❌ Connection error: {str(e)}")
+
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
 
