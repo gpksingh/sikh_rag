@@ -7,6 +7,9 @@ from langchain_community.llms import Ollama
 import os
 import tempfile
 
+# Get Ollama host from environment or use default
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
 
@@ -116,7 +119,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success(f"✓ Created {len(docs)} chunks")
         
         with st.spinner("Loading embedding model..."):
-            embeddings = OllamaEmbeddings(model=embedding_model)
+            embeddings = OllamaEmbeddings(model=embedding_model, base_url=OLLAMA_HOST)
             test_embedding = embeddings.embed_query("test")
             st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
         
@@ -135,7 +138,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success("✓ Vector store saved")
         
         with st.spinner("Loading LLM model..."):
-            st.session_state.llm = Ollama(model=model_name)
+            st.session_state.llm = Ollama(model=model_name, base_url=OLLAMA_HOST)
             st.success(f"✓ LLM model ({model_name}) loaded")
         
         st.session_state.initialized = True
