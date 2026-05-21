@@ -1,14 +1,17 @@
 import streamlit as st
-from langchain_community.document_loaders.pdf import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import CharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
-from langchain_community.llms import Ollama
+from langchain_ollama import OllamaLLM
 import os
 import tempfile
 
-# Get Ollama host from environment or use default
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+# Get Ollama host from Streamlit secrets (for cloud) or environment (for local)
+try:
+    OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
+except (KeyError, FileNotFoundError):
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
@@ -138,7 +141,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success("✓ Vector store saved")
         
         with st.spinner("Loading LLM model..."):
-            st.session_state.llm = Ollama(model=model_name, base_url=OLLAMA_HOST)
+            st.session_state.llm = OllamaLLM(model=model_name, base_url=OLLAMA_HOST)
             st.success(f"✓ LLM model ({model_name}) loaded")
         
         st.session_state.initialized = True
