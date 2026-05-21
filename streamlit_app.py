@@ -13,6 +13,9 @@ try:
 except (KeyError, FileNotFoundError):
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
+# Debug: Show which URL is being used
+st.sidebar.info(f"🔗 Ollama Host: `{OLLAMA_HOST}`")
+
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
 
