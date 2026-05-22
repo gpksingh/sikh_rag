@@ -1,28 +1,31 @@
 #!/bin/bash
 # Test Railway Ollama Connection
 
-# Replace with your actual Railway public URL
-RAILWAY_URL="https://YOUR_RAILWAY_PUBLIC_URL"
+# Railway Ollama URL
+RAILWAY_URL="https://ollama-production-016d.up.railway.app:8050"
 
 echo "🔍 Testing Railway Ollama Connection..."
 echo "URL: $RAILWAY_URL"
 echo ""
 
-# Test 1: Check if endpoint is reachable
-echo "Test 1: Checking connectivity..."
-curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" "$RAILWAY_URL/api/tags"
+# Test 1: Check if endpoint is reachable with timeout
+echo "Test 1: Checking connectivity (30 second timeout)..."
+curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" --max-time 30 "$RAILWAY_URL/api/tags"
 echo ""
 
 # Test 2: Get models list
 echo "Test 2: Getting models list..."
-curl -s "$RAILWAY_URL/api/tags" | head -20
+curl -s --max-time 30 "$RAILWAY_URL/api/tags" 2>&1 | head -30
 echo ""
 
 # Test 3: Test embedding
 echo "Test 3: Testing embedding..."
-curl -X POST "$RAILWAY_URL/api/embed" \
+curl -s -X POST --max-time 30 "$RAILWAY_URL/api/embed" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "nomic-embed-text",
     "input": "test query"
-  }' | head -20
+  }' 2>&1 | head -30
+
+echo ""
+echo "✅ Connection test complete"

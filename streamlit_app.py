@@ -5,12 +5,27 @@ from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_community.vectorstores import FAISS
 import os
 import tempfile
+import requests
+from urllib.parse import urljoin
 
 # Get Ollama host from Streamlit secrets (for cloud) or environment (for local)
 try:
     OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
 except (KeyError, FileNotFoundError):
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+# Function to test Ollama connection
+def test_ollama_connection(base_url, timeout=10):
+    """Test if Ollama is responding"""
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=timeout)
+        return response.status_code == 200
+    except requests.exceptions.Timeout:
+        return False
+    except requests.exceptions.ConnectionError:
+        return False
+    except Exception:
+        return False
 
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
@@ -32,7 +47,11 @@ st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
 
 # Show Ollama status
-st.info(f"🔗 **Ollama Host:** `{OLLAMA_HOST}`\n\n**Note:** Railway free tier apps sleep after inactivity. If you see connection errors, your Railway Ollama may be sleeping. Keep the app running or upgrade to paid tier.")
+ollama_connected = test_ollama_connection(OLLAMA_HOST, timeout=5)
+status_icon = "✅" if ollama_connected else "⚠️"
+status_text = "Connected" if ollama_connected else "Offline/Timeout"
+
+st.info(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`\n\n**Note:** Railway apps may take time to respond on first request. If offline, the app may be sleeping or warming up.")
 
 # Initialize session state
 if "retriever" not in st.session_state:
@@ -75,7 +94,7 @@ with st.sidebar:
     
     model_name = st.selectbox(
         "LLM Model",
-        ["gemma4:31b-cloud", "llama3.1", "gemma:7b", "mistral"],
+        ["mistral", "llama2", "neural-chat", "gemma:7b"],
         index=0
     )
     
@@ -123,10 +142,21 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             docs = text_splitter.split_documents(documents=documents)
             st.success(f"✓ Created {len(docs)} chunks")
         
-        with st.spinner("Loading embedding model..."):
-            embeddings = OllamaEmbeddings(model=embedding_model, base_url=OLLAMA_HOST)
-            test_embedding = embeddings.embed_query("test")
-            st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
+        with st.spinner("Loading embedding model (this may take 30+ seconds on first request)..."):
+            try:
+                embeddings = OllamaEmbeddings(
+                    model=embedding_model, 
+                    base_url=OLLAMA_HOST
+                )
+                test_embedding = embeddings.embed_query("test")
+                st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
+            except requests.exceptions.Timeout:
+                st.error("❌ Embedding model request timed out. Railway app may be sleeping. Wait 30-60 seconds and try again.")
+                st.stop()
+            except Exception as e:
+                st.error(f"❌ Failed to load embedding model: {str(e)}")
+                st.info("💡 **Troubleshooting tips:**\n- Ensure Ollama is running on " + OLLAMA_HOST + "\n- Wait 30-60 seconds if using Railway (cold start)\n- Check that the embedding model exists on your Ollama instance")
+                st.stop()
         
         with st.spinner("Creating vector store..."):
             vectorstore = FAISS.from_documents(docs, embeddings)
@@ -143,8 +173,16 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success("✓ Vector store saved")
         
         with st.spinner("Loading LLM model..."):
-            st.session_state.llm = OllamaLLM(model=model_name, base_url=OLLAMA_HOST)
-            st.success(f"✓ LLM model ({model_name}) loaded")
+            try:
+                st.session_state.llm = OllamaLLM(
+                    model=model_name, 
+                    base_url=OLLAMA_HOST
+                )
+                st.success(f"✓ LLM model ({model_name}) loaded")
+            except Exception as e:
+                st.error(f"❌ Failed to load LLM model: {str(e)}")
+                st.info("💡 Ensure the model '" + model_name + "' is pulled on your Ollama instance")
+                st.stop()
         
         st.session_state.initialized = True
         st.success("✅ RAG Pipeline is ready!")
