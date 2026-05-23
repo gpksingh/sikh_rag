@@ -8,11 +8,11 @@ import tempfile
 import requests
 from urllib.parse import urljoin
 
-# Get Ollama host from Streamlit secrets (for cloud) or environment (for local)
+# Get Ollama host from Streamlit secrets (for cloud) or environment
 try:
     OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
 except (KeyError, FileNotFoundError):
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama-production-016d.up.railway.app")
 
 # Function to test Ollama connection
 def test_ollama_connection(base_url, timeout=10):
@@ -46,12 +46,15 @@ st.markdown("""
 st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
 
-# Show Ollama status
-ollama_connected = test_ollama_connection(OLLAMA_HOST, timeout=5)
+# Show Ollama status with detailed diagnostics
+ollama_connected = test_ollama_connection(OLLAMA_HOST, timeout=10)
 status_icon = "✅" if ollama_connected else "⚠️"
-status_text = "Connected" if ollama_connected else "Offline/Timeout"
+status_text = "Connected" if ollama_connected else "Offline/Error"
 
-st.info(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`\n\n**Note:** Railway apps may take time to respond on first request. If offline, the app may be sleeping or warming up.")
+if ollama_connected:
+    st.info(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`")
+else:
+    st.warning(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`\n\n⚠️ **Railway Ollama Not Responding:**\n- The Railway Ollama deployment may be down or crashed\n- Check the Railway dashboard (https://railway.app)\n- Verify the Ollama service is running and healthy\n- Try restarting the Railway Ollama deployment\n- This app requires Railway Ollama to function")
 
 # Initialize session state
 if "retriever" not in st.session_state:
@@ -150,12 +153,19 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 )
                 test_embedding = embeddings.embed_query("test")
                 st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
-            except requests.exceptions.Timeout:
-                st.error("❌ Embedding model request timed out. Railway app may be sleeping. Wait 30-60 seconds and try again.")
-                st.stop()
             except Exception as e:
-                st.error(f"❌ Failed to load embedding model: {str(e)}")
-                st.info("💡 **Troubleshooting tips:**\n- Ensure Ollama is running on " + OLLAMA_HOST + "\n- Wait 30-60 seconds if using Railway (cold start)\n- Check that the embedding model exists on your Ollama instance")
+                error_msg = str(e)
+                st.error(f"❌ Failed to load embedding model:\n\n{error_msg}")
+                st.info("💡 **Troubleshooting:**\n"
+                        "1. **502 Error:** Railway Ollama is not responding\n"
+                        "   - Check the Railway dashboard (https://railway.app)\n"
+                        "   - Verify the Ollama deployment is running and healthy\n"
+                        "   - Try restarting the Ollama service\n"
+                        "2. **Connection Timeout:** Railway app may be sleeping\n"
+                        "   - Wait 30-60 seconds for cold start\n"
+                        "   - Try again\n"
+                        "3. **Model not found:** Ensure 'nomic-embed-text' is pulled on Railway\n"
+                        f"\n🔗 **Current Host:** `{OLLAMA_HOST}`")
                 st.stop()
         
         with st.spinner("Creating vector store..."):
@@ -181,7 +191,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 st.success(f"✓ LLM model ({model_name}) loaded")
             except Exception as e:
                 st.error(f"❌ Failed to load LLM model: {str(e)}")
-                st.info("💡 Ensure the model '" + model_name + "' is pulled on your Ollama instance")
+                st.info(f"💡 Ensure the model '{model_name}' is available on Railway Ollama")
                 st.stop()
         
         st.session_state.initialized = True
