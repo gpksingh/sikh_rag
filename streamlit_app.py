@@ -146,27 +146,12 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success(f"✓ Created {len(docs)} chunks")
         
         with st.spinner("Loading embedding model (this may take 30+ seconds on first request)..."):
-            try:
-                embeddings = OllamaEmbeddings(
-                    model=embedding_model, 
-                    base_url=OLLAMA_HOST
-                )
-                test_embedding = embeddings.embed_query("test")
-                st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
-            except Exception as e:
-                error_msg = str(e)
-                st.error(f"❌ Failed to load embedding model:\n\n{error_msg}")
-                st.info("💡 **Troubleshooting:**\n"
-                        "1. **502 Error:** Railway Ollama is not responding\n"
-                        "   - Check the Railway dashboard (https://railway.app)\n"
-                        "   - Verify the Ollama deployment is running and healthy\n"
-                        "   - Try restarting the Ollama service\n"
-                        "2. **Connection Timeout:** Railway app may be sleeping\n"
-                        "   - Wait 30-60 seconds for cold start\n"
-                        "   - Try again\n"
-                        "3. **Model not found:** Ensure 'nomic-embed-text' is pulled on Railway\n"
-                        f"\n🔗 **Current Host:** `{OLLAMA_HOST}`")
-                st.stop()
+            embeddings = OllamaEmbeddings(
+                model=embedding_model, 
+                base_url=OLLAMA_HOST
+            )
+            test_embedding = embeddings.embed_query("test")
+            st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
         
         with st.spinner("Creating vector store..."):
             vectorstore = FAISS.from_documents(docs, embeddings)
@@ -183,16 +168,11 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.success("✓ Vector store saved")
         
         with st.spinner("Loading LLM model..."):
-            try:
-                st.session_state.llm = OllamaLLM(
-                    model=model_name, 
-                    base_url=OLLAMA_HOST
-                )
-                st.success(f"✓ LLM model ({model_name}) loaded")
-            except Exception as e:
-                st.error(f"❌ Failed to load LLM model: {str(e)}")
-                st.info(f"💡 Ensure the model '{model_name}' is available on Railway Ollama")
-                st.stop()
+            st.session_state.llm = OllamaLLM(
+                model=model_name, 
+                base_url=OLLAMA_HOST
+            )
+            st.success(f"✓ LLM model ({model_name}) loaded")
         
         st.session_state.initialized = True
         st.success("✅ RAG Pipeline is ready!")
