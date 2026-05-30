@@ -10,11 +10,14 @@ from urllib.parse import urljoin
 
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
-    OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
-    OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "6d420ebdb6d4421388ff2c3057853508.9Uq-WAcy9UGhTrTlshKoPkQk ")
-except (KeyError, FileNotFoundError):
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://api.ollama.ai")
+    OLLAMA_HOST = st.secrets.get("OLLAMA_HOST", "https://api.ollama.com")
+    OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "")
+except (KeyError, FileNotFoundError, Exception):
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://api.ollama.com")
     OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
+
+# Build auth headers if API key is present
+OLLAMA_HEADERS = {"Authorization": f"Bearer {OLLAMA_API_KEY}"} if OLLAMA_API_KEY else {}
 
 # Function to test Ollama connection
 def test_ollama_connection(base_url, api_key="", timeout=10):
@@ -152,11 +155,10 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
         
         with st.spinner("Loading embedding model (this may take 30+ seconds on first request)..."):
             embeddings = OllamaEmbeddings(
-                model=embedding_model, 
-                base_url=OLLAMA_HOST
+                model=embedding_model,
+                base_url=OLLAMA_HOST,
+                headers=OLLAMA_HEADERS
             )
-            if OLLAMA_API_KEY:
-                embeddings.client.headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
             test_embedding = embeddings.embed_query("test")
             st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
         
@@ -176,11 +178,10 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
         
         with st.spinner("Loading LLM model..."):
             st.session_state.llm = OllamaLLM(
-                model=model_name, 
-                base_url=OLLAMA_HOST
+                model=model_name,
+                base_url=OLLAMA_HOST,
+                headers=OLLAMA_HEADERS
             )
-            if OLLAMA_API_KEY:
-                st.session_state.llm.client.headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
             st.success(f"✓ LLM model ({model_name}) loaded")
         
         st.session_state.initialized = True
