@@ -164,7 +164,6 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             embeddings = OllamaEmbeddings(
                 model=embedding_model,
                 base_url=OLLAMA_HOST,
-                headers=OLLAMA_HEADERS if OLLAMA_HEADERS else None,
             )
             test_embedding = embeddings.embed_query("test")
             st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
@@ -187,7 +186,6 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.session_state.llm = OllamaLLM(
                 model=model_name,
                 base_url=OLLAMA_HOST,
-                headers=OLLAMA_HEADERS if OLLAMA_HEADERS else None,
             )
             st.success(f"✓ LLM model ({model_name}) loaded")
         
