@@ -19,6 +19,13 @@ except (KeyError, FileNotFoundError, Exception):
 # Build auth headers if API key is present
 OLLAMA_HEADERS = {"Authorization": f"Bearer {OLLAMA_API_KEY}"} if OLLAMA_API_KEY else {}
 
+# Debug: show if key is loaded (shows only first/last 4 chars for security)
+if OLLAMA_API_KEY:
+    masked = OLLAMA_API_KEY[:4] + "..." + OLLAMA_API_KEY[-4:]
+    st.sidebar.caption(f"🔑 API Key loaded: `{masked}`")
+else:
+    st.sidebar.warning("⚠️ No API Key found in secrets!")
+
 # Function to test Ollama connection
 def test_ollama_connection(base_url, api_key="", timeout=10):
     """Test if Ollama is responding"""
@@ -157,6 +164,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             embeddings = OllamaEmbeddings(
                 model=embedding_model,
                 base_url=OLLAMA_HOST,
+                headers=OLLAMA_HEADERS if OLLAMA_HEADERS else None,
             )
             test_embedding = embeddings.embed_query("test")
             st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
@@ -179,6 +187,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.session_state.llm = OllamaLLM(
                 model=model_name,
                 base_url=OLLAMA_HOST,
+                headers=OLLAMA_HEADERS if OLLAMA_HEADERS else None,
             )
             st.success(f"✓ LLM model ({model_name}) loaded")
         
