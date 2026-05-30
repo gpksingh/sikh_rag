@@ -102,7 +102,7 @@ with st.sidebar:
     
     model_name = st.selectbox(
         "LLM Model",
-        ["mistral", "llama2", "neural-chat", "gemma:7b"],
+        ["gemma:4b", "mistral", "llama2", "neural-chat", "gemma:7b"],
         index=0
     )
     
