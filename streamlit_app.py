@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
     OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
-    OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "")
+    OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "6d420ebdb6d4421388ff2c3057853508.9Uq-WAcy9UGhTrTlshKoPkQk ")
 except (KeyError, FileNotFoundError):
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://api.ollama.ai")
     OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
