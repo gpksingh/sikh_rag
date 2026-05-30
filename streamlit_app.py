@@ -8,17 +8,22 @@ import tempfile
 import requests
 from urllib.parse import urljoin
 
-# Get Ollama host from Streamlit secrets (for cloud) or environment
+# Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
     OLLAMA_HOST = st.secrets["OLLAMA_HOST"]
+    OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "")
 except (KeyError, FileNotFoundError):
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama-production-016d.up.railway.app")
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://api.ollama.ai")
+    OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
 
 # Function to test Ollama connection
-def test_ollama_connection(base_url, timeout=10):
+def test_ollama_connection(base_url, api_key="", timeout=10):
     """Test if Ollama is responding"""
     try:
-        response = requests.get(f"{base_url}/api/tags", timeout=timeout)
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        response = requests.get(f"{base_url}/api/tags", headers=headers, timeout=timeout)
         return response.status_code == 200
     except requests.exceptions.Timeout:
         return False
@@ -47,14 +52,14 @@ st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
 
 # Show Ollama status with detailed diagnostics
-ollama_connected = test_ollama_connection(OLLAMA_HOST, timeout=10)
+ollama_connected = test_ollama_connection(OLLAMA_HOST, OLLAMA_API_KEY, timeout=10)
 status_icon = "✅" if ollama_connected else "⚠️"
 status_text = "Connected" if ollama_connected else "Offline/Error"
 
 if ollama_connected:
     st.info(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`")
 else:
-    st.warning(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`\n\n⚠️ **Railway Ollama Not Responding:**\n- The Railway Ollama deployment may be down or crashed\n- Check the Railway dashboard (https://railway.app)\n- Verify the Ollama service is running and healthy\n- Try restarting the Railway Ollama deployment\n- This app requires Railway Ollama to function")
+    st.warning(f"{status_icon} **Ollama Status:** {status_text}\n\n🔗 **Host:** `{OLLAMA_HOST}`\n\n⚠️ **Ollama Cloud Not Responding:**\n- Check your API key is valid\n- Verify Ollama Cloud service is running\n- Check network connectivity\n- This app requires Ollama Cloud to function")
 
 # Initialize session state
 if "retriever" not in st.session_state:
@@ -150,6 +155,8 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 model=embedding_model, 
                 base_url=OLLAMA_HOST
             )
+            if OLLAMA_API_KEY:
+                embeddings.client.headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
             test_embedding = embeddings.embed_query("test")
             st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
         
@@ -172,6 +179,8 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 model=model_name, 
                 base_url=OLLAMA_HOST
             )
+            if OLLAMA_API_KEY:
+                st.session_state.llm.client.headers = {"Authorization": f"Bearer {OLLAMA_API_KEY}"}
             st.success(f"✓ LLM model ({model_name}) loaded")
         
         st.session_state.initialized = True
