@@ -10,10 +10,10 @@ from urllib.parse import urljoin
 
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
-    OLLAMA_HOST = st.secrets.get("OLLAMA_HOST", "https://api.ollama.com").strip()
+    OLLAMA_HOST = st.secrets.get("OLLAMA_HOST", "https://ollama-production-416d.up.railway.app").strip()
     OLLAMA_API_KEY = st.secrets.get("OLLAMA_API_KEY", "").strip()
 except (KeyError, FileNotFoundError, Exception):
-    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://api.ollama.com").strip()
+    OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama-production-416d.up.railway.app").strip()
     OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 
 # Build auth headers if API key is present
