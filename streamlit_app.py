@@ -74,6 +74,7 @@ else:
 # Initialize session state
 if "retriever" not in st.session_state:
     st.session_state.retriever = None
+    st.session_state.vectorstore = None
     st.session_state.llm = None
     st.session_state.initialized = False
 
@@ -120,6 +121,27 @@ with st.sidebar:
         "Embedding Model",
         ["nomic-embed-text"]
     )
+
+    st.markdown("---")
+    st.header("🔬 RAG Mode")
+    rag_mode = st.radio(
+        "Select RAG strategy:",
+        ["Standard RAG", "ReFRAG", "⚖️ Compare Both"],
+        index=0,
+        help="Standard RAG: retrieve → generate.\nReFRAG: retrieve → LLM filters relevant chunks → reformulate query if needed → generate.\nCompare Both: run both and show context window metrics side-by-side."
+    )
+
+    if rag_mode == "ReFRAG":
+        st.info("**ReFRAG** filters out irrelevant chunks using the LLM, then reformulates the query if not enough relevant context is found.")
+        refrag_top_k = st.slider("Initial retrieval top-k", 4, 20, 8, 2)
+        refrag_relevance_threshold = st.slider("Min relevant chunks before re-query", 1, 6, 2, 1)
+    elif rag_mode == "⚖️ Compare Both":
+        st.info("Runs **both** pipelines and compares context window size, chunk count, and answer quality.")
+        refrag_top_k = st.slider("ReFRAG initial top-k", 4, 20, 8, 2)
+        refrag_relevance_threshold = st.slider("ReFRAG min relevant chunks", 1, 6, 2, 1)
+    else:
+        refrag_top_k = 4
+        refrag_relevance_threshold = 2
 
 # Initialize RAG pipeline
 if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
@@ -179,7 +201,8 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 embeddings,
                 allow_dangerous_deserialization=True
             )
-            st.session_state.retriever = persisted_vectorstore.as_retriever()
+            st.session_state.retriever = persisted_vectorstore.as_retriever(search_kwargs={"k": 8})
+            st.session_state.vectorstore = persisted_vectorstore
             st.success("✓ Vector store saved")
         
         with st.spinner("Loading LLM model..."):
@@ -195,33 +218,29 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
 
-# Query interface
-if st.session_state.initialized:
-    st.markdown("---")
-    st.subheader("🔍 Ask a Question")
-    
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        query = st.text_input(
-            "Your question:",
-            placeholder="e.g., What is Sikhism? Who founded it?"
-        )
-    
-    with col2:
-        search_button = st.button("Search", type="primary")
-    
-    if search_button and query:
-        with st.spinner("Searching and generating answer..."):
-            try:
-                # Retrieve relevant documents
-                retrieved_docs = st.session_state.retriever.invoke(query)
-                
-                # Combine context
-                context = "\n".join([doc.page_content for doc in retrieved_docs])
-                
-                # Create prompt
-                prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
+# ── ReFRAG helpers ────────────────────────────────────────────────────────────
+
+def context_stats(docs: list, query: str) -> dict:
+    """Compute context window metrics for a set of retrieved docs."""
+    full_context = "\n\n".join([d.page_content for d in docs])
+    chars = len(full_context)
+    # Rough token estimate: 1 token ≈ 4 chars for English text
+    est_tokens = chars // 4
+    # Add prompt overhead estimate (~50 tokens for template)
+    total_prompt_tokens = est_tokens + len(query) // 4 + 50
+    return {
+        "chunks": len(docs),
+        "total_chars": chars,
+        "est_context_tokens": est_tokens,
+        "est_total_prompt_tokens": total_prompt_tokens,
+    }
+
+
+def run_standard_rag(query: str, retriever, llm) -> tuple:
+    """Standard RAG: retrieve → generate. Returns (answer, docs, stats)."""
+    docs = retriever.invoke(query)
+    context = "\n\n".join([d.page_content for d in docs])
+    prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
 
 Context:
 {context}
@@ -229,23 +248,252 @@ Context:
 Question: {query}
 
 Answer:"""
-                
-                # Get response
-                response = st.session_state.llm.invoke(prompt_text)
-                
-                # Display results
-                st.markdown("### Answer")
-                st.write(response)
-                
-                # Display source documents
-                with st.expander("📖 Source Documents"):
-                    for i, doc in enumerate(retrieved_docs, 1):
-                        st.markdown(f"**Document {i}:**")
-                        st.text(doc.page_content[:500] + "...")
+    answer = llm.invoke(prompt_text)
+    stats = context_stats(docs, query)
+    return answer, docs, stats
+
+def score_chunk_relevance(llm, query: str, chunk: str) -> bool:
+    """Ask the LLM whether a chunk is relevant to the query. Returns True/False."""
+    prompt = f"""You are a relevance filter. Answer ONLY with 'yes' or 'no'.
+
+Is the following passage relevant to answering this question?
+
+Question: {query}
+
+Passage:
+{chunk[:800]}
+
+Answer (yes/no):"""
+    try:
+        resp = llm.invoke(prompt).strip().lower()
+        return resp.startswith("yes")
+    except Exception:
+        return True  # default to keeping the chunk on error
+
+
+def reformulate_query(llm, original_query: str, retrieved_chunks: list) -> str:
+    """Ask the LLM to reformulate the query given that retrieved chunks weren't relevant enough."""
+    context_sample = "\n---\n".join([c.page_content[:300] for c in retrieved_chunks[:3]])
+    prompt = f"""The following question was asked but the retrieved passages were not relevant enough.
+
+Original question: {original_query}
+
+Sample of what was retrieved:
+{context_sample}
+
+Please rewrite the question to be more specific and likely to retrieve better passages from a Sikh religious text.
+Return ONLY the rewritten question, nothing else."""
+    try:
+        return llm.invoke(prompt).strip()
+    except Exception:
+        return original_query
+
+
+def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
+    """
+    ReFRAG pipeline:
+    1. Retrieve top_k chunks
+    2. Score each chunk for relevance with the LLM
+    3. If fewer than min_relevant chunks pass, reformulate the query and retrieve again
+    4. Combine all relevant chunks and generate the final answer
+    """
+    steps = []
+
+    # Step 1: Initial retrieval
+    retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
+    initial_docs = retriever.invoke(query)
+    steps.append(("🔍 Initial retrieval", f"Retrieved {len(initial_docs)} chunks for: *{query}*"))
+
+    # Step 2: Score relevance
+    relevant_docs = []
+    irrelevant_docs = []
+    for doc in initial_docs:
+        if score_chunk_relevance(llm, query, doc.page_content):
+            relevant_docs.append(doc)
+        else:
+            irrelevant_docs.append(doc)
+
+    steps.append(("🧠 Relevance filtering",
+                  f"{len(relevant_docs)} relevant / {len(irrelevant_docs)} filtered out"))
+
+    # Step 3: Reformulate if not enough relevant chunks
+    reformulated_query = None
+    if len(relevant_docs) < min_relevant:
+        reformulated_query = reformulate_query(llm, query, initial_docs)
+        steps.append(("✏️ Query reformulation", f"New query: *{reformulated_query}*"))
+
+        retriever2 = vectorstore.as_retriever(search_kwargs={"k": top_k})
+        extra_docs = retriever2.invoke(reformulated_query)
+        for doc in extra_docs:
+            if doc not in relevant_docs and score_chunk_relevance(llm, reformulated_query, doc.page_content):
+                relevant_docs.append(doc)
+
+        steps.append(("🔍 Re-retrieval",
+                      f"After re-retrieval: {len(relevant_docs)} relevant chunks total"))
+
+    # Fall back to all initial docs if still nothing passed
+    final_docs = relevant_docs if relevant_docs else initial_docs
+
+    # Step 4: Generate answer
+    context = "\n\n".join([doc.page_content for doc in final_docs])
+    effective_query = reformulated_query or query
+    prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
+
+Context:
+{context}
+
+Question: {effective_query}
+
+Answer:"""
+    answer = llm.invoke(prompt_text)
+
+    return answer, final_docs, steps, context_stats(final_docs, effective_query)
+
+
+# ── Query interface ────────────────────────────────────────────────────────────
+
+def render_stats_card(stats: dict, label: str, color: str):
+    """Render a context window stats card."""
+    st.markdown(f"""
+    <div style="background:{color};padding:1rem;border-radius:8px;margin-bottom:0.5rem;">
+        <b>{label}</b><br/>
+        📦 <b>Chunks used:</b> {stats['chunks']}<br/>
+        📝 <b>Context characters:</b> {stats['total_chars']:,}<br/>
+        🔢 <b>Est. context tokens:</b> {stats['est_context_tokens']:,}<br/>
+        📨 <b>Est. total prompt tokens:</b> {stats['est_total_prompt_tokens']:,}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+if st.session_state.initialized:
+    st.markdown("---")
+    st.subheader("🔍 Ask a Question")
+
+    col1, col2 = st.columns([4, 1])
+    with col1:
+        query = st.text_input(
+            "Your question:",
+            placeholder="e.g., What is Sikhism? Who founded it?"
+        )
+    with col2:
+        search_button = st.button("Search", type="primary")
+
+    if search_button and query:
+
+        # ── Compare Both ──────────────────────────────────────────────────────
+        if rag_mode == "⚖️ Compare Both":
+            with st.spinner("Running Standard RAG..."):
+                try:
+                    rag_answer, rag_docs, rag_stats = run_standard_rag(
+                        query, st.session_state.retriever, st.session_state.llm
+                    )
+                except Exception as e:
+                    st.error(f"❌ Standard RAG error: {e}")
+                    st.stop()
+
+            with st.spinner("Running ReFRAG (this takes longer due to chunk scoring)..."):
+                try:
+                    ref_answer, ref_docs, ref_steps, ref_stats = run_refrag(
+                        query,
+                        st.session_state.vectorstore,
+                        st.session_state.llm,
+                        top_k=refrag_top_k,
+                        min_relevant=refrag_relevance_threshold,
+                    )
+                except Exception as e:
+                    st.error(f"❌ ReFRAG error: {e}")
+                    st.stop()
+
+            # Context window comparison banner
+            st.markdown("### 📊 Context Window Comparison")
+            m1, m2, m3, m4 = st.columns(4)
+            delta_chunks = ref_stats["chunks"] - rag_stats["chunks"]
+            delta_tokens = ref_stats["est_context_tokens"] - rag_stats["est_context_tokens"]
+            m1.metric("RAG Chunks", rag_stats["chunks"])
+            m2.metric("ReFRAG Chunks", ref_stats["chunks"], delta=delta_chunks,
+                      delta_color="inverse")
+            m3.metric("RAG Est. Tokens", f"{rag_stats['est_context_tokens']:,}")
+            m4.metric("ReFRAG Est. Tokens", f"{ref_stats['est_context_tokens']:,}",
+                      delta=delta_tokens, delta_color="inverse")
+
+            # Token reduction bar
+            if rag_stats["est_context_tokens"] > 0:
+                reduction_pct = (1 - ref_stats["est_context_tokens"] / rag_stats["est_context_tokens"]) * 100
+                st.markdown(f"**Token reduction with ReFRAG:** `{reduction_pct:+.1f}%` "
+                            f"({'fewer' if reduction_pct > 0 else 'more'} tokens in context)")
+
+            st.markdown("---")
+
+            # Side-by-side answers
+            col_rag, col_ref = st.columns(2)
+
+            with col_rag:
+                st.markdown("#### 📄 Standard RAG")
+                render_stats_card(rag_stats, "Context Stats", "#f0f4ff")
+                st.markdown("**Answer:**")
+                st.write(rag_answer)
+                with st.expander("📖 Source Documents (RAG)"):
+                    for i, doc in enumerate(rag_docs, 1):
+                        st.markdown(f"**Doc {i}:**")
+                        st.text(doc.page_content[:400] + "...")
                         st.markdown("---")
-            
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
+
+            with col_ref:
+                st.markdown("#### 🔬 ReFRAG")
+                render_stats_card(ref_stats, "Context Stats", "#f0fff4")
+                with st.expander("🔬 ReFRAG Pipeline Steps"):
+                    for title, detail in ref_steps:
+                        st.markdown(f"**{title}:** {detail}")
+                st.markdown("**Answer:**")
+                st.write(ref_answer)
+                with st.expander("📖 Source Documents (ReFRAG)"):
+                    for i, doc in enumerate(ref_docs, 1):
+                        st.markdown(f"**Doc {i}:**")
+                        st.text(doc.page_content[:400] + "...")
+                        st.markdown("---")
+
+        # ── ReFRAG only ───────────────────────────────────────────────────────
+        elif rag_mode == "ReFRAG":
+            with st.spinner("Running ReFRAG pipeline..."):
+                try:
+                    answer, final_docs, steps, stats = run_refrag(
+                        query,
+                        st.session_state.vectorstore,
+                        st.session_state.llm,
+                        top_k=refrag_top_k,
+                        min_relevant=refrag_relevance_threshold,
+                    )
+                    with st.expander("🔬 ReFRAG Pipeline Steps", expanded=True):
+                        for title, detail in steps:
+                            st.markdown(f"**{title}:** {detail}")
+                    render_stats_card(stats, "Context Window Stats", "#f0fff4")
+                    st.markdown("### Answer")
+                    st.write(answer)
+                    with st.expander("📖 Source Documents used"):
+                        for i, doc in enumerate(final_docs, 1):
+                            st.markdown(f"**Document {i}:**")
+                            st.text(doc.page_content[:500] + "...")
+                            st.markdown("---")
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
+
+        # ── Standard RAG only ─────────────────────────────────────────────────
+        else:
+            with st.spinner("Searching and generating answer..."):
+                try:
+                    response, retrieved_docs, stats = run_standard_rag(
+                        query, st.session_state.retriever, st.session_state.llm
+                    )
+                    render_stats_card(stats, "Context Window Stats", "#f0f4ff")
+                    st.markdown("### Answer")
+                    st.write(response)
+                    with st.expander("📖 Source Documents"):
+                        for i, doc in enumerate(retrieved_docs, 1):
+                            st.markdown(f"**Document {i}:**")
+                            st.text(doc.page_content[:500] + "...")
+                            st.markdown("---")
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
 
 else:
     st.info("👈 Click 'Initialize RAG Pipeline' to get started!")
