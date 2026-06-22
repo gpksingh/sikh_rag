@@ -43,6 +43,26 @@ def test_ollama_connection(base_url, api_key="", timeout=10):
     except Exception:
         return False
 
+def benchmark_ollama(base_url: str, timeout: int = 15) -> dict:
+    """Run a quick embed request and return latency stats."""
+    try:
+        t0 = time.time()
+        resp = requests.post(
+            f"{base_url}/api/embeddings",
+            json={"model": "nomic-embed-text", "prompt": "Waheguru"},
+            timeout=timeout,
+        )
+        latency = time.time() - t0
+        if resp.status_code == 200:
+            return {"status": "online", "latency_ms": round(latency * 1000)}
+        else:
+            return {"status": "error", "latency_ms": None, "code": resp.status_code}
+    except requests.exceptions.Timeout:
+        return {"status": "timeout", "latency_ms": None}
+    except Exception as e:
+        return {"status": "offline", "latency_ms": None}
+
+
 # Page config
 st.set_page_config(page_title="Sikh RAG", layout="wide")
 
@@ -61,6 +81,50 @@ st.markdown("""
 # Title and description
 st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
+
+# ── Speed comparison banner ───────────────────────────────────────────────────
+LOCAL_HOST_BENCH = "http://localhost:11434"
+CLOUD_HOST_BENCH = OLLAMA_HOST
+
+with st.spinner("Benchmarking local vs cloud response time..."):
+    local_bench = benchmark_ollama(LOCAL_HOST_BENCH, timeout=4)
+    cloud_bench = benchmark_ollama(CLOUD_HOST_BENCH, timeout=10)
+
+def _bench_label(b: dict, name: str) -> str:
+    if b["status"] == "online":
+        return f"✅ **{name}:** `{b['latency_ms']} ms`"
+    elif b["status"] == "timeout":
+        return f"⏱️ **{name}:** Timed out"
+    else:
+        return f"❌ **{name}:** Offline"
+
+b_col1, b_col2, b_col3 = st.columns(3)
+with b_col1:
+    if local_bench["status"] == "online":
+        st.metric("🖥️ Local Ollama", f"{local_bench['latency_ms']} ms", help="Embed latency to localhost:11434")
+    else:
+        st.metric("🖥️ Local Ollama", "Offline")
+with b_col2:
+    if cloud_bench["status"] == "online":
+        delta = None
+        if local_bench["status"] == "online":
+            delta = cloud_bench["latency_ms"] - local_bench["latency_ms"]
+        st.metric("☁️ Cloud Ollama", f"{cloud_bench['latency_ms']} ms",
+                  delta=f"{delta:+d} ms vs local" if delta is not None else None,
+                  delta_color="inverse",
+                  help=f"Embed latency to {CLOUD_HOST_BENCH}")
+    else:
+        st.metric("☁️ Cloud Ollama", "Offline")
+with b_col3:
+    if local_bench["status"] == "online" and cloud_bench["status"] == "online":
+        ratio = cloud_bench["latency_ms"] / max(local_bench["latency_ms"], 1)
+        faster = "Local" if local_bench["latency_ms"] < cloud_bench["latency_ms"] else "Cloud"
+        st.metric("⚡ Speed Ratio", f"{ratio:.1f}×", help=f"{faster} is faster")
+    else:
+        st.metric("⚡ Speed Ratio", "N/A")
+
+st.caption(f"ℹ️ Benchmark uses a single `nomic-embed-text` embed call. Measured at page load. Local = `{LOCAL_HOST_BENCH}` · Cloud = `{CLOUD_HOST_BENCH}`")
+st.markdown("---")
 
 # Show Ollama status with detailed diagnostics
 ollama_connected = test_ollama_connection(OLLAMA_HOST, OLLAMA_API_KEY, timeout=10)
