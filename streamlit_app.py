@@ -114,7 +114,7 @@ with st.sidebar:
     
     model_name = st.selectbox(
         "LLM Model",
-        ["gemma3:4b", "gemma:4b", "mistral", "llama2", "neural-chat", "gemma:7b"],
+        ["gemma3:4b"],
         index=0
     )
     
@@ -147,7 +147,7 @@ with st.sidebar:
         cloud_host = st.text_input("☁️ Instance B URL (cloud)", value=OLLAMA_HOST)
         compare_model = st.selectbox(
             "Model to compare",
-            ["gemma3:4b", "gemma:4b", "mistral", "llama2"],
+            ["gemma3:4b"],
             index=0
         )
         local_available = test_ollama_connection(local_host, timeout=3)
