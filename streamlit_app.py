@@ -318,9 +318,36 @@ def context_stats(docs: list, query: str) -> dict:
     }
 
 
+def run_llm_streaming(llm, prompt_text: str) -> tuple:
+    """
+    Stream LLM output to capture TTFT and E2E latency.
+    Returns (response, ttft_ms, llm_e2e_ms, output_tokens)
+    """
+    t0 = time.time()
+    t_first = None
+    full_response = ""
+    try:
+        for chunk in llm.stream(prompt_text):
+            if t_first is None:
+                t_first = time.time()
+            full_response += str(chunk)
+        llm_e2e_ms = round((time.time() - t0) * 1000)
+    except Exception:
+        # Fallback if streaming not supported
+        full_response = llm.invoke(prompt_text)
+        llm_e2e_ms = round((time.time() - t0) * 1000)
+        t_first = t0
+    ttft_ms = round((t_first - t0) * 1000) if t_first else 0
+    output_tokens = max(1, len(full_response) // 4)
+    return full_response, ttft_ms, llm_e2e_ms, output_tokens
+
+
 def run_standard_rag(query: str, retriever, llm) -> tuple:
-    """Standard RAG: retrieve → generate. Returns (answer, docs, stats, latency_s)."""
+    """Standard RAG. Returns (answer, docs, stats, perf) where perf = {ttft_ms, e2e_ms, input_tokens, output_tokens}."""
+    t_retrieve = time.time()
     docs = retriever.invoke(query)
+    retrieve_ms = round((time.time() - t_retrieve) * 1000)
+
     context = "\n\n".join([d.page_content for d in docs])
     prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
 
@@ -330,11 +357,16 @@ Context:
 Question: {query}
 
 Answer:"""
-    t0 = time.time()
-    answer = llm.invoke(prompt_text)
-    latency = time.time() - t0
+    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
     stats = context_stats(docs, query)
-    return answer, docs, stats, latency
+    perf = {
+        "ttft_ms": retrieve_ms + ttft_ms,   # user-facing: includes retrieval wait
+        "e2e_ms": retrieve_ms + llm_e2e_ms, # full round-trip
+        "retrieve_ms": retrieve_ms,
+        "input_tokens": stats["est_total_prompt_tokens"],
+        "output_tokens": output_tokens,
+    }
+    return answer, docs, stats, perf
 
 def score_chunk_relevance(llm, query: str, chunk: str) -> bool:
     """Ask the LLM whether a chunk is relevant to the query. Returns True/False."""
@@ -375,17 +407,16 @@ Return ONLY the rewritten question, nothing else."""
 
 def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
     """
-    ReFRAG pipeline:
-    1. Retrieve top_k chunks
-    2. Score each chunk for relevance with the LLM
-    3. If fewer than min_relevant chunks pass, reformulate the query and retrieve again
-    4. Combine all relevant chunks and generate the final answer
+    ReFRAG pipeline. Returns (answer, final_docs, steps, stats, perf).
     """
     steps = []
+    t_start = time.time()
 
     # Step 1: Initial retrieval
+    t_retrieve = time.time()
     retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
     initial_docs = retriever.invoke(query)
+    retrieve_ms = round((time.time() - t_retrieve) * 1000)
     steps.append(("🔍 Initial retrieval", f"Retrieved {len(initial_docs)} chunks for: *{query}*"))
 
     # Step 2: Score relevance
@@ -396,7 +427,6 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
             relevant_docs.append(doc)
         else:
             irrelevant_docs.append(doc)
-
     steps.append(("🧠 Relevance filtering",
                   f"{len(relevant_docs)} relevant / {len(irrelevant_docs)} filtered out"))
 
@@ -405,20 +435,17 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
     if len(relevant_docs) < min_relevant:
         reformulated_query = reformulate_query(llm, query, initial_docs)
         steps.append(("✏️ Query reformulation", f"New query: *{reformulated_query}*"))
-
         retriever2 = vectorstore.as_retriever(search_kwargs={"k": top_k})
         extra_docs = retriever2.invoke(reformulated_query)
         for doc in extra_docs:
             if doc not in relevant_docs and score_chunk_relevance(llm, reformulated_query, doc.page_content):
                 relevant_docs.append(doc)
-
         steps.append(("🔍 Re-retrieval",
                       f"After re-retrieval: {len(relevant_docs)} relevant chunks total"))
 
-    # Fall back to all initial docs if still nothing passed
     final_docs = relevant_docs if relevant_docs else initial_docs
 
-    # Step 4: Generate answer
+    # Step 4: Generate answer with streaming metrics
     context = "\n\n".join([doc.page_content for doc in final_docs])
     effective_query = reformulated_query or query
     prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
@@ -429,12 +456,45 @@ Context:
 Question: {effective_query}
 
 Answer:"""
-    answer = llm.invoke(prompt_text)
-
-    return answer, final_docs, steps, context_stats(final_docs, effective_query)
+    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
+    stats = context_stats(final_docs, effective_query)
+    perf = {
+        "ttft_ms": retrieve_ms + ttft_ms,
+        "e2e_ms": round((time.time() - t_start) * 1000),
+        "retrieve_ms": retrieve_ms,
+        "input_tokens": stats["est_total_prompt_tokens"],
+        "output_tokens": output_tokens,
+    }
+    return answer, final_docs, steps, stats, perf
 
 
 # ── Query interface ────────────────────────────────────────────────────────────
+
+def render_perf_metrics(perf: dict):
+    """Display TTFT, E2E Latency, and Token Cost/Consumption as a metric row."""
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "⚡ TTFT",
+        f"{perf['ttft_ms']:,} ms",
+        help="Time to First Token — retrieval wait + time until LLM starts generating. Key user-experience metric."
+    )
+    c2.metric(
+        "⏱️ E2E Latency",
+        f"{perf['e2e_ms']:,} ms",
+        help="End-to-End Latency — total time from query submission to full response."
+    )
+    total_tokens = perf["input_tokens"] + perf["output_tokens"]
+    c3.metric(
+        "🪙 Token Consumption",
+        f"{total_tokens:,}",
+        help=f"Input tokens: {perf['input_tokens']:,}  |  Output tokens: {perf['output_tokens']:,}"
+    )
+    st.caption(
+        f"📥 Input tokens: `{perf['input_tokens']:,}` &nbsp;·&nbsp; "
+        f"📤 Output tokens: `{perf['output_tokens']:,}` &nbsp;·&nbsp; "
+        f"🔍 Retrieval: `{perf.get('retrieve_ms', 0):,} ms`"
+    )
+
 
 def render_stats_card(stats: dict, label: str, color: str):
     """Render a context window stats card."""
@@ -490,10 +550,10 @@ if st.session_state.initialized:
                             retriever_instance = st.session_state.vectorstore.as_retriever(
                                 search_kwargs={"k": 4}
                             )
-                            answer, docs, stats, latency = run_standard_rag(
+                            answer, docs, stats, perf = run_standard_rag(
                                 query, retriever_instance, llm_instance
                             )
-                            st.metric("⏱️ Response time", f"{latency:.2f}s")
+                            render_perf_metrics(perf)
                             render_stats_card(stats, "Context Stats", "#111111")
                             st.markdown("**Answer:**")
                             st.write(answer)
@@ -512,7 +572,7 @@ if st.session_state.initialized:
         elif rag_mode == "⚖️ Compare Both":
             with st.spinner("Running Standard RAG..."):
                 try:
-                    rag_answer, rag_docs, rag_stats, _ = run_standard_rag(
+                    rag_answer, rag_docs, rag_stats, rag_perf = run_standard_rag(
                         query, st.session_state.retriever, st.session_state.llm
                     )
                 except Exception as e:
@@ -521,7 +581,7 @@ if st.session_state.initialized:
 
             with st.spinner("Running ReFRAG (this takes longer due to chunk scoring)..."):
                 try:
-                    ref_answer, ref_docs, ref_steps, ref_stats = run_refrag(
+                    ref_answer, ref_docs, ref_steps, ref_stats, ref_perf = run_refrag(
                         query,
                         st.session_state.vectorstore,
                         st.session_state.llm,
@@ -532,24 +592,25 @@ if st.session_state.initialized:
                     st.error(f"❌ ReFRAG error: {e}")
                     st.stop()
 
-            # Context window comparison banner
-            st.markdown("### 📊 Context Window Comparison")
-            m1, m2, m3, m4 = st.columns(4)
-            delta_chunks = ref_stats["chunks"] - rag_stats["chunks"]
-            delta_tokens = ref_stats["est_context_tokens"] - rag_stats["est_context_tokens"]
-            m1.metric("RAG Chunks", rag_stats["chunks"])
-            m2.metric("ReFRAG Chunks", ref_stats["chunks"], delta=delta_chunks,
-                      delta_color="inverse")
-            m3.metric("RAG Est. Tokens", f"{rag_stats['est_context_tokens']:,}")
-            m4.metric("ReFRAG Est. Tokens", f"{ref_stats['est_context_tokens']:,}",
-                      delta=delta_tokens, delta_color="inverse")
+            # Performance + context window comparison banner
+            st.markdown("### 📊 Performance & Context Window Comparison")
+            m1, m2, m3, m4, m5, m6 = st.columns(6)
+            m1.metric("RAG TTFT", f"{rag_perf['ttft_ms']:,} ms")
+            m2.metric("ReFRAG TTFT", f"{ref_perf['ttft_ms']:,} ms",
+                      delta=f"{ref_perf['ttft_ms']-rag_perf['ttft_ms']:+,} ms", delta_color="inverse")
+            m3.metric("RAG E2E", f"{rag_perf['e2e_ms']:,} ms")
+            m4.metric("ReFRAG E2E", f"{ref_perf['e2e_ms']:,} ms",
+                      delta=f"{ref_perf['e2e_ms']-rag_perf['e2e_ms']:+,} ms", delta_color="inverse")
+            rag_total_tok = rag_perf["input_tokens"] + rag_perf["output_tokens"]
+            ref_total_tok = ref_perf["input_tokens"] + ref_perf["output_tokens"]
+            m5.metric("RAG Tokens", f"{rag_total_tok:,}")
+            m6.metric("ReFRAG Tokens", f"{ref_total_tok:,}",
+                      delta=f"{ref_total_tok-rag_total_tok:+,}", delta_color="inverse")
 
-            # Token reduction bar
-            if rag_stats["est_context_tokens"] > 0:
-                reduction_pct = (1 - ref_stats["est_context_tokens"] / rag_stats["est_context_tokens"]) * 100
-                st.markdown(f"**Token reduction with ReFRAG:** `{reduction_pct:+.1f}%` "
-                            f"({'fewer' if reduction_pct > 0 else 'more'} tokens in context)")
-
+            if rag_perf["input_tokens"] > 0:
+                token_reduction = (1 - ref_total_tok / max(rag_total_tok, 1)) * 100
+                st.caption(f"Token reduction with ReFRAG: **{token_reduction:+.1f}%** "
+                           f"({'fewer' if token_reduction > 0 else 'more'} tokens total)")
             st.markdown("---")
 
             # Side-by-side answers
@@ -557,7 +618,8 @@ if st.session_state.initialized:
 
             with col_rag:
                 st.markdown("#### 📄 Standard RAG")
-                render_stats_card(rag_stats, "Context Stats", "#f0f4ff")
+                render_perf_metrics(rag_perf)
+                render_stats_card(rag_stats, "Context Stats", "#111111")
                 st.markdown("**Answer:**")
                 st.write(rag_answer)
                 with st.expander("📖 Source Documents (RAG)"):
@@ -568,7 +630,8 @@ if st.session_state.initialized:
 
             with col_ref:
                 st.markdown("#### 🔬 ReFRAG")
-                render_stats_card(ref_stats, "Context Stats", "#f0fff4")
+                render_perf_metrics(ref_perf)
+                render_stats_card(ref_stats, "Context Stats", "#111111")
                 with st.expander("🔬 ReFRAG Pipeline Steps"):
                     for title, detail in ref_steps:
                         st.markdown(f"**{title}:** {detail}")
@@ -584,17 +647,18 @@ if st.session_state.initialized:
         elif rag_mode == "ReFRAG":
             with st.spinner("Running ReFRAG pipeline..."):
                 try:
-                    answer, final_docs, steps, stats = run_refrag(
+                    answer, final_docs, steps, stats, perf = run_refrag(
                         query,
                         st.session_state.vectorstore,
                         st.session_state.llm,
                         top_k=refrag_top_k,
                         min_relevant=refrag_relevance_threshold,
                     )
+                    render_perf_metrics(perf)
                     with st.expander("🔬 ReFRAG Pipeline Steps", expanded=True):
                         for title, detail in steps:
                             st.markdown(f"**{title}:** {detail}")
-                    render_stats_card(stats, "Context Window Stats", "#f0fff4")
+                    render_stats_card(stats, "Context Window Stats", "#111111")
                     st.markdown("### Answer")
                     st.write(answer)
                     with st.expander("📖 Source Documents used"):
@@ -609,10 +673,10 @@ if st.session_state.initialized:
         else:
             with st.spinner("Searching and generating answer..."):
                 try:
-                    response, retrieved_docs, stats, latency = run_standard_rag(
+                    response, retrieved_docs, stats, perf = run_standard_rag(
                         query, st.session_state.retriever, st.session_state.llm
                     )
-                    st.metric("⏱️ Response time", f"{latency:.2f}s")
+                    render_perf_metrics(perf)
                     render_stats_card(stats, "Context Window Stats", "#111111")
                     st.markdown("### Answer")
                     st.write(response)
