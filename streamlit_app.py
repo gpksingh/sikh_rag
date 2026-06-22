@@ -6,6 +6,7 @@ from langchain_community.vectorstores import FAISS
 import os
 import tempfile
 import requests
+import time
 from urllib.parse import urljoin
 
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
@@ -126,9 +127,9 @@ with st.sidebar:
     st.header("🔬 RAG Mode")
     rag_mode = st.radio(
         "Select RAG strategy:",
-        ["Standard RAG", "ReFRAG", "⚖️ Compare Both"],
+        ["Standard RAG", "ReFRAG", "⚖️ Compare Both", "🖥️ Local vs ☁️ Cloud"],
         index=0,
-        help="Standard RAG: retrieve → generate.\nReFRAG: retrieve → LLM filters relevant chunks → reformulate query if needed → generate.\nCompare Both: run both and show context window metrics side-by-side."
+        help="Standard RAG: retrieve → generate.\nReFRAG: retrieve → LLM filters → reformulate → generate.\nCompare Both: RAG vs ReFRAG context window metrics.\nLocal vs Cloud: compare same model running locally and on Railway."
     )
 
     if rag_mode == "ReFRAG":
@@ -139,6 +140,23 @@ with st.sidebar:
         st.info("Runs **both** pipelines and compares context window size, chunk count, and answer quality.")
         refrag_top_k = st.slider("ReFRAG initial top-k", 4, 20, 8, 2)
         refrag_relevance_threshold = st.slider("ReFRAG min relevant chunks", 1, 6, 2, 1)
+    elif rag_mode == "🖥️ Local vs ☁️ Cloud":
+        st.info("Runs the **same model** on your local Ollama and the Railway cloud instance, comparing answers and latency.")
+        local_host = st.text_input("Local Ollama URL", value="http://localhost:11434")
+        cloud_host = st.text_input("Cloud Ollama URL", value=OLLAMA_HOST)
+        compare_model = st.selectbox(
+            "Model to compare",
+            ["gemma3:4b", "gemma:4b", "mistral", "llama2", "nomic-embed-text"],
+            index=0
+        )
+        local_available = test_ollama_connection(local_host, timeout=3)
+        cloud_available = test_ollama_connection(cloud_host, timeout=5)
+        st.markdown(
+            f"🖥️ Local: {'✅ Online' if local_available else '❌ Offline'}  |  "
+            f"☁️ Cloud: {'✅ Online' if cloud_available else '❌ Offline'}"
+        )
+        refrag_top_k = 4
+        refrag_relevance_threshold = 2
     else:
         refrag_top_k = 4
         refrag_relevance_threshold = 2
@@ -237,7 +255,7 @@ def context_stats(docs: list, query: str) -> dict:
 
 
 def run_standard_rag(query: str, retriever, llm) -> tuple:
-    """Standard RAG: retrieve → generate. Returns (answer, docs, stats)."""
+    """Standard RAG: retrieve → generate. Returns (answer, docs, stats, latency_s)."""
     docs = retriever.invoke(query)
     context = "\n\n".join([d.page_content for d in docs])
     prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
@@ -248,9 +266,11 @@ Context:
 Question: {query}
 
 Answer:"""
+    t0 = time.time()
     answer = llm.invoke(prompt_text)
+    latency = time.time() - t0
     stats = context_stats(docs, query)
-    return answer, docs, stats
+    return answer, docs, stats, latency
 
 def score_chunk_relevance(llm, query: str, chunk: str) -> bool:
     """Ask the LLM whether a chunk is relevant to the query. Returns True/False."""
@@ -355,7 +375,7 @@ Answer:"""
 def render_stats_card(stats: dict, label: str, color: str):
     """Render a context window stats card."""
     st.markdown(f"""
-    <div style="background:{color};padding:1rem;border-radius:8px;margin-bottom:0.5rem;">
+    <div style="background:#111111;color:#ffffff;padding:1rem;border-radius:8px;margin-bottom:0.5rem;border:1px solid #333;">
         <b>{label}</b><br/>
         📦 <b>Chunks used:</b> {stats['chunks']}<br/>
         📝 <b>Context characters:</b> {stats['total_chars']:,}<br/>
@@ -380,11 +400,51 @@ if st.session_state.initialized:
 
     if search_button and query:
 
+        # ── Local vs Cloud ────────────────────────────────────────────────────
+        if rag_mode == "🖥️ Local vs ☁️ Cloud":
+            if not local_available and not cloud_available:
+                st.error("❌ Neither local nor cloud Ollama is reachable.")
+                st.stop()
+
+            col_local, col_cloud = st.columns(2)
+
+            def run_comparison_side(host: str, label: str, available: bool, col):
+                with col:
+                    st.markdown(f"#### {label}")
+                    if not available:
+                        st.error(f"❌ {label} is offline — cannot connect to `{host}`")
+                        return
+                    with st.spinner(f"Running on {label}..."):
+                        try:
+                            llm_instance = OllamaLLM(model=compare_model, base_url=host)
+                            retriever_instance = st.session_state.vectorstore.as_retriever(
+                                search_kwargs={"k": 4}
+                            )
+                            answer, docs, stats, latency = run_standard_rag(
+                                query, retriever_instance, llm_instance
+                            )
+                            # Latency metric
+                            st.metric("⏱️ Response time", f"{latency:.2f}s")
+                            render_stats_card(stats, "Context Stats", "#111111")
+                            st.markdown(f"**🔗 Host:** `{host}`")
+                            st.markdown("**Answer:**")
+                            st.write(answer)
+                            with st.expander("📖 Source Documents"):
+                                for i, doc in enumerate(docs, 1):
+                                    st.markdown(f"**Doc {i}:**")
+                                    st.text(doc.page_content[:400] + "...")
+                                    st.markdown("---")
+                        except Exception as e:
+                            st.error(f"❌ Error: {e}")
+
+            run_comparison_side(local_host, "🖥️ Local", local_available, col_local)
+            run_comparison_side(cloud_host, "☁️ Cloud", cloud_available, col_cloud)
+
         # ── Compare Both ──────────────────────────────────────────────────────
-        if rag_mode == "⚖️ Compare Both":
+        elif rag_mode == "⚖️ Compare Both":
             with st.spinner("Running Standard RAG..."):
                 try:
-                    rag_answer, rag_docs, rag_stats = run_standard_rag(
+                    rag_answer, rag_docs, rag_stats, _ = run_standard_rag(
                         query, st.session_state.retriever, st.session_state.llm
                     )
                 except Exception as e:
@@ -481,10 +541,11 @@ if st.session_state.initialized:
         else:
             with st.spinner("Searching and generating answer..."):
                 try:
-                    response, retrieved_docs, stats = run_standard_rag(
+                    response, retrieved_docs, stats, latency = run_standard_rag(
                         query, st.session_state.retriever, st.session_state.llm
                     )
-                    render_stats_card(stats, "Context Window Stats", "#f0f4ff")
+                    st.metric("⏱️ Response time", f"{latency:.2f}s")
+                    render_stats_card(stats, "Context Window Stats", "#111111")
                     st.markdown("### Answer")
                     st.write(response)
                     with st.expander("📖 Source Documents"):
