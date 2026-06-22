@@ -141,20 +141,20 @@ with st.sidebar:
         refrag_top_k = st.slider("ReFRAG initial top-k", 4, 20, 8, 2)
         refrag_relevance_threshold = st.slider("ReFRAG min relevant chunks", 1, 6, 2, 1)
     elif rag_mode == "🖥️ Local vs ☁️ Cloud":
-        st.info("Runs the **same model** on your local Ollama and the Railway cloud instance, comparing answers and latency.")
-        local_host = st.text_input("Local Ollama URL", value="http://localhost:11434")
-        cloud_host = st.text_input("Cloud Ollama URL", value=OLLAMA_HOST)
+        st.info("Runs the **same model** on two Ollama instances and compares answers + latency side-by-side.")
+        st.caption("⚠️ **Local URL** must be reachable from where this app is running. If using Streamlit Cloud, expose your local Ollama with a tunnel (e.g. [ngrok](https://ngrok.com)) or run this app locally with `streamlit run streamlit_app.py`.")
+        local_host = st.text_input("🖥️ Instance A URL (local)", value="http://localhost:11434")
+        cloud_host = st.text_input("☁️ Instance B URL (cloud)", value=OLLAMA_HOST)
         compare_model = st.selectbox(
             "Model to compare",
-            ["gemma3:4b", "gemma:4b", "mistral", "llama2", "nomic-embed-text"],
+            ["gemma3:4b", "gemma:4b", "mistral", "llama2"],
             index=0
         )
         local_available = test_ollama_connection(local_host, timeout=3)
         cloud_available = test_ollama_connection(cloud_host, timeout=5)
-        st.markdown(
-            f"🖥️ Local: {'✅ Online' if local_available else '❌ Offline'}  |  "
-            f"☁️ Cloud: {'✅ Online' if cloud_available else '❌ Offline'}"
-        )
+        a_status = "✅ Online" if local_available else "❌ Offline"
+        b_status = "✅ Online" if cloud_available else "❌ Offline"
+        st.markdown(f"**Instance A:** {a_status} &nbsp;&nbsp;|&nbsp;&nbsp; **Instance B:** {b_status}")
         refrag_top_k = 4
         refrag_relevance_threshold = 2
     else:
@@ -402,19 +402,25 @@ if st.session_state.initialized:
 
         # ── Local vs Cloud ────────────────────────────────────────────────────
         if rag_mode == "🖥️ Local vs ☁️ Cloud":
-            if not local_available and not cloud_available:
-                st.error("❌ Neither local nor cloud Ollama is reachable.")
-                st.stop()
+            st.markdown("### 🖥️ Instance A vs ☁️ Instance B")
+            st.markdown(f"**Model:** `{compare_model}` &nbsp;|&nbsp; **Query:** *{query}*")
+            st.markdown("---")
 
             col_local, col_cloud = st.columns(2)
 
             def run_comparison_side(host: str, label: str, available: bool, col):
                 with col:
                     st.markdown(f"#### {label}")
+                    st.caption(f"🔗 `{host}`")
                     if not available:
-                        st.error(f"❌ {label} is offline — cannot connect to `{host}`")
+                        st.error(
+                            f"❌ Cannot reach `{host}`\n\n"
+                            "**If running on Streamlit Cloud:** expose your local Ollama via "
+                            "[ngrok](https://ngrok.com) and paste the public URL above.\n\n"
+                            "**If running locally:** make sure `ollama serve` is running."
+                        )
                         return
-                    with st.spinner(f"Running on {label}..."):
+                    with st.spinner(f"Querying {label}..."):
                         try:
                             llm_instance = OllamaLLM(model=compare_model, base_url=host)
                             retriever_instance = st.session_state.vectorstore.as_retriever(
@@ -423,10 +429,8 @@ if st.session_state.initialized:
                             answer, docs, stats, latency = run_standard_rag(
                                 query, retriever_instance, llm_instance
                             )
-                            # Latency metric
                             st.metric("⏱️ Response time", f"{latency:.2f}s")
                             render_stats_card(stats, "Context Stats", "#111111")
-                            st.markdown(f"**🔗 Host:** `{host}`")
                             st.markdown("**Answer:**")
                             st.write(answer)
                             with st.expander("📖 Source Documents"):
@@ -437,8 +441,8 @@ if st.session_state.initialized:
                         except Exception as e:
                             st.error(f"❌ Error: {e}")
 
-            run_comparison_side(local_host, "🖥️ Local", local_available, col_local)
-            run_comparison_side(cloud_host, "☁️ Cloud", cloud_available, col_cloud)
+            run_comparison_side(local_host, "🖥️ Instance A (Local)", local_available, col_local)
+            run_comparison_side(cloud_host, "☁️ Instance B (Cloud)", cloud_available, col_cloud)
 
         # ── Compare Both ──────────────────────────────────────────────────────
         elif rag_mode == "⚖️ Compare Both":
