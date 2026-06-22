@@ -82,48 +82,39 @@ st.markdown("""
 st.title("📚 Sikh Religious Texts RAG")
 st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
 
-# ── Speed comparison banner ───────────────────────────────────────────────────
-LOCAL_HOST_BENCH = "http://localhost:11434"
-CLOUD_HOST_BENCH = OLLAMA_HOST
-
-with st.spinner("Benchmarking local vs cloud response time..."):
-    local_bench = benchmark_ollama(LOCAL_HOST_BENCH, timeout=4)
-    cloud_bench = benchmark_ollama(CLOUD_HOST_BENCH, timeout=10)
-
-def _bench_label(b: dict, name: str) -> str:
-    if b["status"] == "online":
-        return f"✅ **{name}:** `{b['latency_ms']} ms`"
-    elif b["status"] == "timeout":
-        return f"⏱️ **{name}:** Timed out"
-    else:
-        return f"❌ **{name}:** Offline"
-
-b_col1, b_col2, b_col3 = st.columns(3)
-with b_col1:
-    if local_bench["status"] == "online":
-        st.metric("🖥️ Local Ollama", f"{local_bench['latency_ms']} ms", help="Embed latency to localhost:11434")
-    else:
-        st.metric("🖥️ Local Ollama", "Offline")
-with b_col2:
-    if cloud_bench["status"] == "online":
-        delta = None
-        if local_bench["status"] == "online":
-            delta = cloud_bench["latency_ms"] - local_bench["latency_ms"]
-        st.metric("☁️ Cloud Ollama", f"{cloud_bench['latency_ms']} ms",
-                  delta=f"{delta:+d} ms vs local" if delta is not None else None,
-                  delta_color="inverse",
-                  help=f"Embed latency to {CLOUD_HOST_BENCH}")
-    else:
-        st.metric("☁️ Cloud Ollama", "Offline")
-with b_col3:
-    if local_bench["status"] == "online" and cloud_bench["status"] == "online":
-        ratio = cloud_bench["latency_ms"] / max(local_bench["latency_ms"], 1)
-        faster = "Local" if local_bench["latency_ms"] < cloud_bench["latency_ms"] else "Cloud"
-        st.metric("⚡ Speed Ratio", f"{ratio:.1f}×", help=f"{faster} is faster")
-    else:
-        st.metric("⚡ Speed Ratio", "N/A")
-
-st.caption(f"ℹ️ Benchmark uses a single `nomic-embed-text` embed call. Measured at page load. Local = `{LOCAL_HOST_BENCH}` · Cloud = `{CLOUD_HOST_BENCH}`")
+# ── Top metrics banner ────────────────────────────────────────────────────────
+st.markdown("### 📈 Last Query Performance")
+if st.session_state.get("last_perf"):
+    p = st.session_state.last_perf
+    t1, t2, t3 = st.columns(3)
+    t1.metric(
+        "⚡ Time to First Token",
+        f"{p['ttft_ms']:,} ms",
+        help="Retrieval time + time until the LLM produces its first token. Key user-experience metric."
+    )
+    t2.metric(
+        "⏱️ End-to-End Latency",
+        f"{p['e2e_ms']:,} ms",
+        help="Total time from query submission to complete response."
+    )
+    total_tok = p["input_tokens"] + p["output_tokens"]
+    t3.metric(
+        "🪙 Token Consumption",
+        f"{total_tok:,} tokens",
+        help=f"Input: {p['input_tokens']:,} tokens · Output: {p['output_tokens']:,} tokens"
+    )
+    st.caption(
+        f"📥 Input: `{p['input_tokens']:,}` &nbsp;·&nbsp; "
+        f"📤 Output: `{p['output_tokens']:,}` &nbsp;·&nbsp; "
+        f"🔍 Retrieval: `{p.get('retrieve_ms', 0):,} ms` &nbsp;·&nbsp; "
+        f"🏷️ Mode: `{st.session_state.get('last_mode', 'Standard RAG')}`"
+    )
+else:
+    t1, t2, t3 = st.columns(3)
+    t1.metric("⚡ Time to First Token", "—", help="Run a query to see TTFT")
+    t2.metric("⏱️ End-to-End Latency", "—", help="Run a query to see E2E latency")
+    t3.metric("🪙 Token Consumption", "—", help="Run a query to see token usage")
+    st.caption("ℹ️ Metrics will appear here after your first query.")
 st.markdown("---")
 
 # Show Ollama status with detailed diagnostics
@@ -142,6 +133,7 @@ if "retriever" not in st.session_state:
     st.session_state.vectorstore = None
     st.session_state.llm = None
     st.session_state.initialized = False
+    st.session_state.last_perf = None
 
 # Sidebar for configuration
 with st.sidebar:
@@ -553,6 +545,8 @@ if st.session_state.initialized:
                             answer, docs, stats, perf = run_standard_rag(
                                 query, retriever_instance, llm_instance
                             )
+                            st.session_state.last_perf = perf
+                            st.session_state.last_mode = f"Local vs Cloud ({label})"
                             render_perf_metrics(perf)
                             render_stats_card(stats, "Context Stats", "#111111")
                             st.markdown("**Answer:**")
@@ -611,6 +605,9 @@ if st.session_state.initialized:
                 token_reduction = (1 - ref_total_tok / max(rag_total_tok, 1)) * 100
                 st.caption(f"Token reduction with ReFRAG: **{token_reduction:+.1f}%** "
                            f"({'fewer' if token_reduction > 0 else 'more'} tokens total)")
+            # Save ReFRAG perf as last (more interesting for the top banner)
+            st.session_state.last_perf = ref_perf
+            st.session_state.last_mode = "⚖️ Compare Both (ReFRAG)"
             st.markdown("---")
 
             # Side-by-side answers
@@ -654,6 +651,8 @@ if st.session_state.initialized:
                         top_k=refrag_top_k,
                         min_relevant=refrag_relevance_threshold,
                     )
+                    st.session_state.last_perf = perf
+                    st.session_state.last_mode = "ReFRAG"
                     render_perf_metrics(perf)
                     with st.expander("🔬 ReFRAG Pipeline Steps", expanded=True):
                         for title, detail in steps:
@@ -676,6 +675,8 @@ if st.session_state.initialized:
                     response, retrieved_docs, stats, perf = run_standard_rag(
                         query, st.session_state.retriever, st.session_state.llm
                     )
+                    st.session_state.last_perf = perf
+                    st.session_state.last_mode = "Standard RAG"
                     render_perf_metrics(perf)
                     render_stats_card(stats, "Context Window Stats", "#111111")
                     st.markdown("### Answer")
