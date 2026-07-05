@@ -254,29 +254,58 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             docs = text_splitter.split_documents(documents=documents)
             st.success(f"✓ Created {len(docs)} chunks")
         
-        with st.spinner("Loading embedding model (this may take 30+ seconds on first request)..."):
+        with st.spinner("Loading embedding model..."):
             embeddings = OllamaEmbeddings(
                 model=embedding_model,
                 base_url=OLLAMA_HOST,
             )
-            test_embedding = embeddings.embed_query("test")
-            st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
-        
-        with st.spinner("Creating vector store..."):
-            vectorstore = FAISS.from_documents(docs, embeddings)
-            st.success("✓ Vector store created")
-        
-        with st.spinner("Saving vector store..."):
-            vectorstore.save_local("faiss_index_")
-            persisted_vectorstore = FAISS.load_local(
-                "faiss_index_",
-                embeddings,
-                allow_dangerous_deserialization=True
-            )
-            st.session_state.retriever = persisted_vectorstore.as_retriever(search_kwargs={"k": 8})
-            st.session_state.vectorstore = persisted_vectorstore
-            st.success("✓ Vector store saved")
-        
+
+        # Use pre-built index if available — avoids 502 on Railway cloud
+        FAISS_PATH = "faiss_index_"
+        if os.path.exists(os.path.join(FAISS_PATH, "index.faiss")):
+            with st.spinner("Loading pre-built vector store..."):
+                persisted_vectorstore = FAISS.load_local(
+                    FAISS_PATH, embeddings, allow_dangerous_deserialization=True
+                )
+                st.success("✓ Loaded pre-built vector store (skipped embedding)")
+        else:
+            with st.spinner("Embedding model test..."):
+                test_embedding = embeddings.embed_query("test")
+                st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
+
+            with st.spinner("Creating vector store (embedding in batches)..."):
+                BATCH_SIZE = 8
+                vectorstore = None
+                progress = st.progress(0)
+                for i in range(0, len(docs), BATCH_SIZE):
+                    batch = docs[i:i + BATCH_SIZE]
+                    for attempt in range(3):
+                        try:
+                            if vectorstore is None:
+                                vectorstore = FAISS.from_documents(batch, embeddings)
+                            else:
+                                batch_vs = FAISS.from_documents(batch, embeddings)
+                                vectorstore.merge_from(batch_vs)
+                            break
+                        except Exception:
+                            if attempt < 2:
+                                time.sleep(2 ** attempt)
+                            else:
+                                raise
+                    time.sleep(0.5)
+                    progress.progress(min((i + BATCH_SIZE) / len(docs), 1.0))
+                progress.empty()
+
+            with st.spinner("Saving vector store..."):
+                vectorstore.save_local(FAISS_PATH)
+                persisted_vectorstore = FAISS.load_local(
+                    FAISS_PATH, embeddings, allow_dangerous_deserialization=True
+                )
+                st.success("✓ Vector store created and saved")
+
+        st.session_state.retriever = persisted_vectorstore.as_retriever(search_kwargs={"k": 8})
+        st.session_state.vectorstore = persisted_vectorstore
+
         with st.spinner("Loading LLM model..."):
             st.session_state.llm = OllamaLLM(
                 model=model_name,
