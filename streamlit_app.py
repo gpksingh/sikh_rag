@@ -267,14 +267,27 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 base_url=OLLAMA_HOST,
             )
 
-        # Use pre-built index if available — avoids 502 on Railway cloud
+        # Build a fingerprint of current settings to decide if cached index is valid
+        import hashlib, json as _json
+        _source = pdf_path if pdf_source == "Use Default PDF" else (uploaded_file.name if uploaded_file else "unknown")
+        _fingerprint = hashlib.md5(
+            _json.dumps({"source": _source, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap, "embedding": embedding_model}, sort_keys=True).encode()
+        ).hexdigest()[:8]
         FAISS_PATH = "faiss_index_"
-        if os.path.exists(os.path.join(FAISS_PATH, "index.faiss")):
-            with st.spinner("Loading pre-built vector store..."):
+        FINGERPRINT_FILE = os.path.join(FAISS_PATH, "fingerprint.txt")
+
+        # Check if the cached index matches current settings
+        cached_fingerprint = None
+        if os.path.exists(FINGERPRINT_FILE):
+            with open(FINGERPRINT_FILE) as f:
+                cached_fingerprint = f.read().strip()
+
+        if cached_fingerprint == _fingerprint and os.path.exists(os.path.join(FAISS_PATH, "index.faiss")):
+            with st.spinner("Loading cached vector store..."):
                 persisted_vectorstore = FAISS.load_local(
                     FAISS_PATH, embeddings, allow_dangerous_deserialization=True
                 )
-                st.success("✓ Loaded pre-built vector store (skipped embedding)")
+                st.success(f"✓ Loaded cached vector store for `{_source}` (chunk={chunk_size}, overlap={chunk_overlap})")
         else:
             with st.spinner("Embedding model test..."):
                 test_embedding = embeddings.embed_query("test")
@@ -305,6 +318,9 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
 
             with st.spinner("Saving vector store..."):
                 vectorstore.save_local(FAISS_PATH)
+                # Save fingerprint so next run with same settings skips embedding
+                with open(FINGERPRINT_FILE, "w") as f:
+                    f.write(_fingerprint)
                 persisted_vectorstore = FAISS.load_local(
                     FAISS_PATH, embeddings, allow_dangerous_deserialization=True
                 )
