@@ -174,9 +174,11 @@ with st.sidebar:
         try:
             resp = requests.get(f"{host}/api/tags", timeout=5)
             if resp.status_code == 200:
-                all_models = [m["name"] for m in resp.json().get("models", [])]
-                # Exclude embedding models
-                return [m for m in all_models if "embed" not in m.lower()] or ["gemma3:4b"]
+                all_models = resp.json().get("models", [])
+                # Exclude embedding models, sort by size ascending (fastest first)
+                llm_models = [m for m in all_models if "embed" not in m["name"].lower()]
+                llm_models.sort(key=lambda m: m.get("size", 0))
+                return [m["name"] for m in llm_models] or ["gemma3:4b"]
         except Exception:
             pass
         return ["gemma3:4b"]
