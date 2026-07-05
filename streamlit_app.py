@@ -168,11 +168,26 @@ with st.sidebar:
     chunk_size = st.slider("Chunk Size", 500, 2000, 1000, 100)
     chunk_overlap = st.slider("Chunk Overlap", 0, 500, 30, 50)
     
+    # Dynamically fetch available LLM models from the connected Ollama host
+    @st.cache_data(ttl=60, show_spinner=False)
+    def get_available_models(host):
+        try:
+            resp = requests.get(f"{host}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                all_models = [m["name"] for m in resp.json().get("models", [])]
+                # Exclude embedding models
+                return [m for m in all_models if "embed" not in m.lower()] or ["gemma3:4b"]
+        except Exception:
+            pass
+        return ["gemma3:4b"]
+
+    available_llm_models = get_available_models(OLLAMA_HOST)
     model_name = st.selectbox(
         "LLM Model",
-        ["gemma3:4b"],
+        available_llm_models,
         index=0
     )
+    st.caption(f"🔗 Models from `{OLLAMA_HOST}`")
     
     embedding_model = st.selectbox(
         "Embedding Model",
@@ -183,9 +198,9 @@ with st.sidebar:
     st.header("🔬 RAG Mode")
     rag_mode = st.radio(
         "Select RAG strategy:",
-        ["Standard RAG", "ReFRAG", "⚖️ Compare Both", "🖥️ Local vs ☁️ Cloud"],
+        ["Standard RAG", "ReFRAG", "⚖️ Compare Both"],
         index=0,
-        help="Standard RAG: retrieve → generate.\nReFRAG: retrieve → LLM filters → reformulate → generate.\nCompare Both: RAG vs ReFRAG context window metrics.\nLocal vs Cloud: compare same model running locally and on Railway."
+        help="Standard RAG: retrieve → generate.\nReFRAG: retrieve → LLM filters → reformulate → generate.\nCompare Both: RAG vs ReFRAG context window metrics."
     )
 
     if rag_mode == "ReFRAG":
@@ -201,13 +216,13 @@ with st.sidebar:
         st.caption("⚠️ **Local URL** must be reachable from where this app is running. If using Streamlit Cloud, expose your local Ollama with a tunnel (e.g. [ngrok](https://ngrok.com)) or run this app locally with `streamlit run streamlit_app.py`.")
         local_host = st.text_input("🖥️ Instance A URL (local)", value="http://localhost:11434")
         cloud_host = st.text_input("☁️ Instance B URL (cloud)", value=OLLAMA_HOST)
-        compare_model = st.selectbox(
-            "Model to compare",
-            ["gemma3:4b"],
-            index=0
-        )
         local_available = test_ollama_connection(local_host, timeout=3)
         cloud_available = test_ollama_connection(cloud_host, timeout=5)
+        compare_model = st.selectbox(
+            "Model to compare",
+            get_available_models(local_host) if local_available else get_available_models(OLLAMA_HOST),
+            index=0
+        )
         a_status = "✅ Online" if local_available else "❌ Offline"
         b_status = "✅ Online" if cloud_available else "❌ Offline"
         st.markdown(f"**Instance A:** {a_status} &nbsp;&nbsp;|&nbsp;&nbsp; **Instance B:** {b_status}")
