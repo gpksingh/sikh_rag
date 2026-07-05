@@ -37,8 +37,8 @@ wheels/
 .env.local
 .env.*.local
 
-# FAISS vector store (regenerate locally)
-faiss_index_/
+# FAISS vector store - committed so cloud doesn't need to rebuild
+# faiss_index_/
 
 # Large PDF files (optional - uncomment if you want to exclude them)
 # *.pdf
@@ -54,3 +54,4 @@ faiss_index_/
 # Test files (optional)
 ragTest.py
 run_true_story_rag.py
+.streamlit/secrets.toml
