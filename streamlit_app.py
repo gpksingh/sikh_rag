@@ -175,10 +175,15 @@ with st.sidebar:
             resp = requests.get(f"{host}/api/tags", timeout=5)
             if resp.status_code == 200:
                 all_models = resp.json().get("models", [])
-                # Exclude embedding models, sort by size ascending (fastest first)
+                # Exclude embedding models, sort by size ascending (fastest first on CPU)
                 llm_models = [m for m in all_models if "embed" not in m["name"].lower()]
                 llm_models.sort(key=lambda m: m.get("size", 0))
-                return [m["name"] for m in llm_models] or ["gemma3:4b"]
+                names = [m["name"] for m in llm_models]
+                # Prefer gemma4:e2b first if available (fastest on Apple Silicon)
+                if "gemma4:e2b" in names:
+                    names.remove("gemma4:e2b")
+                    names.insert(0, "gemma4:e2b")
+                return names or ["gemma3:4b"]
         except Exception:
             pass
         return ["gemma3:4b"]
