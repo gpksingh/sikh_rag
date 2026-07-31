@@ -77,8 +77,9 @@ with st.sidebar:
         ["ਪੰਜਾਬੀ (Gurmukhi)", "Punjabi English (Roman)"],
         index=0,
         help="Both use Punjabi books. "
-             "Gurmukhi = ਪੰਜਾਬੀ script. "
-             "Punjabi English = same Punjabi words in English letters (not a translation).",
+             "Gurmukhi = ਪੰਜਾਬੀ script answers. "
+             "Punjabi English = ask in English (or Punjabi); answers in Roman Punjabi "
+             "(same Punjabi words in English letters, not an English translation).",
     )
     # API key status (after set_page_config)
     if OLLAMA_API_KEY:
@@ -97,13 +98,15 @@ transliteration_style = "Simple (ASCII)"
 st.title("📚 ਪੰਜਾਬੀ RAG — ਸਿੱਖ / ਪੰਜਾਬੀ ਪੁਸਤਕਾਂ")
 if answer_script == "roman":
     st.markdown(
-        "Grounded answers from Punjabi books, shown in **Punjabi English** "
-        "(Punjabi written with English letters, e.g. `guru nanak` — not an English translation). "
+        "Ask in **English** about an uploaded Punjabi book — answers come back in "
+        "**Punjabi English** (Roman Punjabi: same Punjabi words in English letters, "
+        "e.g. `guru nanak` — not an English translation). "
         "Upload a Punjabi PDF or use the sample booklet."
     )
 else:
     st.markdown(
         "ਪੰਜਾਬੀ (ਗੁਰਮੁਖੀ) ਕਿਤਾਬਾਂ ਤੋਂ grounded ਜਵਾਬ ਲਵੋ। "
+        "You can also ask in English; answers stay in Gurmukhi. "
         "Upload a Punjabi PDF, or use the sample booklet."
     )
 
@@ -603,6 +606,30 @@ def run_llm_streaming(llm, prompt_text: str, *, prefer_invoke: bool = False) -> 
     return full_response, ttft_ms, llm_e2e_ms, output_tokens
 
 
+def retrieve_punjabi_docs(query: str, retriever, llm, *, k: int = 4) -> tuple:
+    """
+    Retrieve from a Punjabi index. If the user asked in English, translate to
+    Gurmukhi for search and merge with the original-query hits.
+    Returns (docs, retrieve_ms, search_query, translated_query).
+    """
+    t_retrieve = time.time()
+    english_q = rag_helpers.looks_like_english(query)
+    translated = ""
+    if english_q:
+        translated = rag_helpers.translate_english_to_gurmukhi_query(llm, query)
+    search_query = translated or query
+    docs_primary = retriever.invoke(search_query)
+    docs_secondary = []
+    if translated and translated != query:
+        try:
+            docs_secondary = retriever.invoke(query)
+        except Exception:
+            docs_secondary = []
+    docs = rag_helpers.merge_retrieved_docs(docs_primary, docs_secondary, limit=k)
+    retrieve_ms = round((time.time() - t_retrieve) * 1000)
+    return docs, retrieve_ms, search_query, translated
+
+
 def run_standard_rag(
     query: str,
     retriever,
@@ -611,9 +638,17 @@ def run_standard_rag(
     punjabi_answer_style: str = "LLM paraphrase",
 ) -> tuple:
     """Standard RAG. Returns (answer, docs, stats, perf) where perf = {ttft_ms, e2e_ms, input_tokens, output_tokens}."""
-    t_retrieve = time.time()
-    docs = retriever.invoke(query)
-    retrieve_ms = round((time.time() - t_retrieve) * 1000)
+    english_q = language == "punjabi" and rag_helpers.looks_like_english(query)
+
+    if language == "punjabi":
+        docs, retrieve_ms, search_query, translated = retrieve_punjabi_docs(
+            query, retriever, llm, k=4
+        )
+    else:
+        t_retrieve = time.time()
+        docs = retriever.invoke(query)
+        retrieve_ms = round((time.time() - t_retrieve) * 1000)
+        search_query, translated = query, ""
 
     # Small multilingual models handle shorter Punjabi contexts more reliably.
     use_docs = docs[:2] if language == "punjabi" else docs
@@ -627,11 +662,15 @@ def run_standard_rag(
             "retrieve_ms": retrieve_ms,
             "input_tokens": stats["est_total_prompt_tokens"],
             "output_tokens": max(1, len(answer) // 4),
+            "search_query": search_query,
+            "translated_query": translated,
         }
         return answer, use_docs, stats, perf
 
     context = "\n\n".join([d.page_content for d in use_docs])
-    prompt_text = rag_helpers.answer_prompt(language, context, query)
+    prompt_text = rag_helpers.answer_prompt(
+        language, context, query, english_question=english_q
+    )
     answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(
         llm, prompt_text, prefer_invoke=(language == "punjabi")
     )
@@ -654,6 +693,8 @@ def run_standard_rag(
         "retrieve_ms": retrieve_ms,
         "input_tokens": stats["est_total_prompt_tokens"],
         "output_tokens": output_tokens,
+        "search_query": search_query,
+        "translated_query": translated if language == "punjabi" else "",
     }
     return answer, use_docs, stats, perf
 
@@ -682,19 +723,33 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, lang
     """
     steps = []
     t_start = time.time()
+    english_q = language == "punjabi" and rag_helpers.looks_like_english(query)
 
-    # Step 1: Initial retrieval
-    t_retrieve = time.time()
+    # Step 1: Initial retrieval (English → Gurmukhi when needed)
     retriever = vectorstore.as_retriever(search_kwargs={"k": top_k})
-    initial_docs = retriever.invoke(query)
-    retrieve_ms = round((time.time() - t_retrieve) * 1000)
-    steps.append(("🔍 Initial retrieval", f"Retrieved {len(initial_docs)} chunks for: *{query}*"))
+    if language == "punjabi":
+        initial_docs, retrieve_ms, search_query, translated = retrieve_punjabi_docs(
+            query, retriever, llm, k=top_k
+        )
+        if translated:
+            steps.append(
+                ("🌐 English → Punjabi search", f"Translated query: *{translated}*")
+            )
+    else:
+        t_retrieve = time.time()
+        initial_docs = retriever.invoke(query)
+        retrieve_ms = round((time.time() - t_retrieve) * 1000)
+        search_query, translated = query, ""
+    steps.append(
+        ("🔍 Initial retrieval", f"Retrieved {len(initial_docs)} chunks for: *{search_query}*")
+    )
 
-    # Step 2: Score relevance
+    # Step 2: Score relevance (use Gurmukhi search query when available)
+    relevance_query = search_query if language == "punjabi" else query
     relevant_docs = []
     irrelevant_docs = []
     for doc in initial_docs:
-        if score_chunk_relevance(llm, query, doc.page_content, language=language):
+        if score_chunk_relevance(llm, relevance_query, doc.page_content, language=language):
             relevant_docs.append(doc)
         else:
             irrelevant_docs.append(doc)
@@ -704,7 +759,10 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, lang
     # Step 3: Reformulate if not enough relevant chunks
     reformulated_query = None
     if len(relevant_docs) < min_relevant:
-        reformulated_query = reformulate_query(llm, query, initial_docs, language=language)
+        reformulate_seed = search_query if language == "punjabi" else query
+        reformulated_query = reformulate_query(
+            llm, reformulate_seed, initial_docs, language=language
+        )
         steps.append(("✏️ Query reformulation", f"New query: *{reformulated_query}*"))
         retriever2 = vectorstore.as_retriever(search_kwargs={"k": top_k})
         extra_docs = retriever2.invoke(reformulated_query)
@@ -721,7 +779,9 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, lang
     # Step 4: Generate answer with streaming metrics
     context = "\n\n".join([doc.page_content for doc in final_docs])
     effective_query = reformulated_query or query
-    prompt_text = rag_helpers.answer_prompt(language, context, effective_query)
+    prompt_text = rag_helpers.answer_prompt(
+        language, context, effective_query, english_question=english_q
+    )
     answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(
         llm, prompt_text, prefer_invoke=(language == "punjabi")
     )
@@ -735,6 +795,8 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, lang
         "retrieve_ms": retrieve_ms,
         "input_tokens": stats["est_total_prompt_tokens"],
         "output_tokens": output_tokens,
+        "search_query": search_query,
+        "translated_query": translated if language == "punjabi" else "",
     }
     return answer, final_docs, steps, stats, perf
 
@@ -765,6 +827,9 @@ def render_perf_metrics(perf: dict):
         f"📤 Output tokens: `{perf['output_tokens']:,}` &nbsp;·&nbsp; "
         f"🔍 Retrieval: `{perf.get('retrieve_ms', 0):,} ms`"
     )
+    translated = (perf.get("translated_query") or "").strip()
+    if translated:
+        st.caption(f"🌐 English question searched as: `{translated}`")
 
 
 def _translit_scheme() -> str:
@@ -817,20 +882,28 @@ def render_stats_card(stats: dict, label: str, color: str):
 if st.session_state.initialized:
     st.markdown("---")
     active_lang = st.session_state.get("rag_language", language)
-    st.subheader("🔍 ਸਵਾਲ ਪੁੱਛੋ" if active_lang == "punjabi" else "🔍 Ask a Question")
+    if answer_script == "roman":
+        st.subheader("🔍 Ask in English")
+        st.caption("Answers are shown in Punjabi English (Roman Punjabi), not English.")
+        q_label = "Your question (English):"
+        q_placeholder = "e.g., Who founded Sikhism? What are the Five Ks?"
+        q_button = "Search"
+    elif active_lang == "punjabi":
+        st.subheader("🔍 ਸਵਾਲ ਪੁੱਛੋ")
+        q_label = "ਤੁਹਾਡਾ ਸਵਾਲ:"
+        q_placeholder = "ਉਦਾਹਰਨ: ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ? ਪੰਜ ਕਕਾਰ ਕੀ ਹਨ? (or ask in English)"
+        q_button = "ਖੋਜੋ"
+    else:
+        st.subheader("🔍 Ask a Question")
+        q_label = "Your question:"
+        q_placeholder = "e.g., What is Sikhism? Who founded it?"
+        q_button = "Search"
 
     col1, col2 = st.columns([4, 1])
     with col1:
-        query = st.text_input(
-            "ਤੁਹਾਡਾ ਸਵਾਲ:" if active_lang == "punjabi" else "Your question:",
-            placeholder=(
-                "ਉਦਾਹਰਨ: ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ? ਪੰਜ ਕਕਾਰ ਕੀ ਹਨ?"
-                if active_lang == "punjabi"
-                else "e.g., What is Sikhism? Who founded it?"
-            ),
-        )
+        query = st.text_input(q_label, placeholder=q_placeholder)
     with col2:
-        search_button = st.button("ਖੋਜੋ" if active_lang == "punjabi" else "Search", type="primary")
+        search_button = st.button(q_button, type="primary")
 
     if search_button and query:
 
@@ -984,11 +1057,12 @@ if st.session_state.initialized:
                     st.error(f"❌ Error: {str(e)}")
 
 else:
-    tip = (
-        "👈 ਖੱਬੇ ਪਾਸੇ 'Initialize RAG Pipeline' ਦਬਾਓ ਅਤੇ ਫਿਰ ਪੰਜਾਬੀ ਸਵਾਲ ਪੁੱਛੋ!"
-        if language == "punjabi"
-        else "👈 Click 'Initialize RAG Pipeline' to get started!"
-    )
+    if answer_script == "roman":
+        tip = "👈 Click Initialize RAG Pipeline, then ask in English — answers come in Punjabi English (Roman)."
+    elif language == "punjabi":
+        tip = "👈 ਖੱਬੇ ਪਾਸੇ 'Initialize RAG Pipeline' ਦਬਾਓ ਅਤੇ ਫਿਰ ਪੰਜਾਬੀ ਸਵਾਲ ਪੁੱਛੋ (Punjabi or English)!"
+    else:
+        tip = "👈 Click 'Initialize RAG Pipeline' to get started!"
     st.info(tip)
 
 # Footer

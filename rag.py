@@ -431,8 +431,88 @@ def extractive_punjabi_answer(docs: list, query: str) -> str:
     return f"ਸੰਦਰਭ ਅਨੁਸਾਰ: {snippet}"
 
 
-def answer_prompt(language: str, context: str, query: str) -> str:
+def looks_like_english(text: str) -> bool:
+    """True when the query is mostly Latin letters and has no Gurmukhi."""
+    if not text or not text.strip():
+        return False
+    if any(is_gurmukhi_char(c) for c in text):
+        return False
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    latin = sum(1 for c in letters if "a" <= c.lower() <= "z")
+    return (latin / len(letters)) >= 0.8
+
+
+def translate_english_to_gurmukhi_query(llm, question: str) -> str:
+    """
+    Translate an English search question into Gurmukhi Punjabi for retrieval
+    against Punjabi book embeddings (needed when the embed model is not
+    strongly cross-lingual, e.g. nomic-embed-text).
+    """
+    prompt = f"""Translate this English question into Punjabi in Gurmukhi script for searching a Punjabi Sikh book.
+Use simple religious vocabulary. Return ONLY one short Gurmukhi line — no English, no quotes, no explanation.
+
+Examples:
+English: Who founded Sikhism?
+Gurmukhi: ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?
+
+English: What are the Five Ks?
+Gurmukhi: ਪੰਜ ਕਕਾਰ ਕੀ ਹਨ?
+
+English: {question}
+Gurmukhi:"""
+    try:
+        raw = str(llm.invoke(prompt) or "").strip()
+    except Exception:
+        return ""
+    for line in raw.splitlines():
+        line = line.strip().strip('"').strip("'")
+        if line and gurmukhi_stats(line)["ratio"] >= 0.35:
+            return line
+    if raw and gurmukhi_stats(raw)["ratio"] >= 0.35:
+        return " ".join(raw.split())
+    return ""
+
+
+def merge_retrieved_docs(*doc_lists: list, limit: int = 4) -> list:
+    """Merge retrieval results, preserving order and dropping duplicate texts."""
+    seen = set()
+    out = []
+    for docs in doc_lists:
+        for doc in docs or []:
+            key = (doc.page_content or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(doc)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def answer_prompt(
+    language: str,
+    context: str,
+    query: str,
+    *,
+    english_question: bool = False,
+) -> str:
     if language == "punjabi":
+        if english_question:
+            return f"""You are a RAG assistant for a Punjabi book.
+The user asked in English. The context is Gurmukhi Punjabi.
+Answer the user's question using ONLY the context.
+Write the WHOLE answer in Gurmukhi Punjabi. Do NOT write English words.
+Keep 1-3 short sentences. Names/dates must match the context.
+If the answer is not in the context, reply exactly: ਇਸ ਪਾਠ ਵਿੱਚ ਇਹ ਜਾਣਕਾਰੀ ਨਹੀਂ ਮਿਲੀ।
+
+Context:
+{context}
+
+English question: {query}
+
+Gurmukhi answer:"""
         return f"""ਤੁਸੀਂ ਇੱਕ RAG ਸਹਾਇਕ ਹੋ। ਸਿਰਫ਼ ਸੰਦਰਭ ਵਿੱਚੋਂ ਹੀ ਜਵਾਬ ਦਿਓ।
 ਨਾਂ ਅਤੇ ਤਾਰੀਖਾਂ ਸੰਦਰਭ ਵਾਂਗ ਹੀ ਲਿਖੋ। 1-2 ਛੋਟੇ ਵਾਕ ਲਿਖੋ।
 ਪੂਰਾ ਜਵਾਬ ਗੁਰਮੁਖੀ ਪੰਜਾਬੀ ਵਿੱਚ ਹੋਵੇ।

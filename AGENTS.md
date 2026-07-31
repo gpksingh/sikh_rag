@@ -9,8 +9,10 @@ CLI variant with a hardcoded macOS PDF path — use `streamlit_app.py` as the en
 
 ### Answer script modes (Punjabi only)
 - Sidebar has exactly two options: **ਪੰਜਾਬੀ (Gurmukhi)** and **Punjabi English (Roman)**.
-- Both use Punjabi books / OCR / `faiss_index_punjabi_/` — Roman only changes answer display
-  (Punjabi in English letters, not a translation).
+- Both use Punjabi books / OCR / `faiss_index_punjabi_/`.
+- **English questions are supported:** the app detects Latin queries, translates them to Gurmukhi
+  for retrieval (needed when embeddings are not strongly cross-lingual), then answers in Gurmukhi.
+  Roman mode displays that answer as Punjabi English (same words in Latin letters — not a translation).
 - Defaults: multilingual embeddings **`bge-m3`** (falls back if missing), grounded-quote answers,
   optional OCR for scanned PDFs (`packages.txt` on Streamlit Cloud).
 - Sample booklet: `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.

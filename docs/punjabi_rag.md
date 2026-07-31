@@ -12,9 +12,12 @@ Shared helpers live in `rag.py`. Sample booklet:
 
 ## Answer script (only two options)
 - **ਪੰਜਾਬੀ (Gurmukhi):** answers in Gurmukhi script
-- **Punjabi English (Roman):** same Punjabi answer in English letters (e.g. `guru nanak`) — not a translation
+- **Punjabi English (Roman):** ask in **English** (or Punjabi); answers in Roman Punjabi
+  (same Punjabi words in English letters, e.g. `guru nanak`) — not an English translation
 
-There is no separate English-language mode.
+There is no separate English-language answer mode. English questions are translated to
+Gurmukhi for retrieval against Punjabi books, then the Gurmukhi answer is shown as Roman
+when Punjabi English is selected.
 
 ## Recommended models (Ollama)
 ```bash
@@ -31,8 +34,9 @@ embedding model (usually `nomic-embed-text`) and shows a sidebar warning.
 ```bash
 OLLAMA_HOST=http://localhost:11434 .venv/bin/streamlit run streamlit_app.py
 ```
-Pick **ਪੰਜਾਬੀ (Gurmukhi)** or **Punjabi English (Roman)**, keep **Grounded quote**, initialize,
-then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?`
+Pick **ਪੰਜਾਬੀ (Gurmukhi)** or **Punjabi English (Roman)**, keep **Grounded quote**, initialize.
+- Gurmukhi mode: ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?` (English also works)
+- Punjabi English mode: ask e.g. `Who founded Sikhism?` → answer like `sandarabh anusara: ... guru nanak ...`
 
 **Answer styles**
 - **Grounded quote (recommended):** returns the best retrieved Gurmukhi passage (~1s).
