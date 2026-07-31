@@ -299,15 +299,18 @@ with st.sidebar:
         "Max OCR pages",
         1,
         200,
-        40,
+        20,
         1,
-        help="Limit pages for OCR to control time/memory (Streamlit Cloud is limited).",
+        help="Limit pages for OCR to control time/memory. "
+             "Large scanned books (100+ pages) can crash Streamlit Cloud if this is too high — "
+             "start with 15–25 pages.",
     )
     ocr_dpi = st.select_slider(
         "OCR DPI",
         options=[150, 200, 250, 300],
-        value=200,
-        help="Higher DPI is more accurate but slower and uses more memory.",
+        value=150,
+        help="Higher DPI is more accurate but slower and uses more memory. "
+             "Use 150 on Streamlit Cloud for big scans.",
     )
     if not ocr_ok:
         st.warning(
@@ -435,6 +438,17 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
         elif stats["has_gurmukhi"]:
             st.caption(f"Detected some Gurmukhi in the source ({stats['ratio']:.0%} of letters).")
 
+        # Drop blank OCR pages before splitting/embedding (prevents FAISS crash)
+        documents = rag_helpers.filter_nonempty_documents(documents, min_chars=20)
+        if not documents:
+            st.error(
+                "❌ No readable text found after loading/OCR. "
+                "For scanned books like phone-camera PDFs, enable OCR, set Max OCR pages "
+                "to at least 15–25, and try OCR DPI 150–200. "
+                "Stylized covers often OCR poorly — later pages usually work better."
+            )
+            st.stop()
+
         with st.spinner("Splitting documents..."):
             docs = rag_helpers.split_documents(
                 documents,
@@ -443,6 +457,10 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 language=language,
             )
             st.success(f"✓ Created {len(docs)} chunks")
+
+        if not docs:
+            st.error("❌ No chunks to embed — the book text was empty after splitting.")
+            st.stop()
 
         with st.spinner("Loading embedding model..."):
             embeddings = OllamaEmbeddings(
@@ -492,8 +510,12 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 BATCH_SIZE = 8
                 vectorstore = None
                 progress = st.progress(0)
+                if not docs:
+                    raise RuntimeError("No document chunks available to embed.")
                 for i in range(0, len(docs), BATCH_SIZE):
-                    batch = docs[i:i + BATCH_SIZE]
+                    batch = [d for d in docs[i:i + BATCH_SIZE] if (d.page_content or "").strip()]
+                    if not batch:
+                        continue
                     for attempt in range(3):
                         try:
                             if vectorstore is None:
@@ -502,6 +524,11 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                                 batch_vs = FAISS.from_documents(batch, embeddings)
                                 vectorstore.merge_from(batch_vs)
                             break
+                        except IndexError as e:
+                            raise RuntimeError(
+                                "Failed to build the search index because chunks were empty. "
+                                "Re-run Initialize with OCR enabled and a higher Max OCR pages."
+                            ) from e
                         except Exception:
                             if attempt < 2:
                                 time.sleep(2 ** attempt)
@@ -510,6 +537,11 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                     time.sleep(0.5)
                     progress.progress(min((i + BATCH_SIZE) / len(docs), 1.0))
                 progress.empty()
+                if vectorstore is None:
+                    raise RuntimeError(
+                        "Embedding produced an empty index. "
+                        "The PDF may still be image-only — enable OCR and try again."
+                    )
 
             with st.spinner("Saving vector store..."):
                 os.makedirs(FAISS_PATH, exist_ok=True)

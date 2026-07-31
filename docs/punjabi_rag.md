@@ -50,7 +50,9 @@ Pick **ਪੰਜਾਬੀ (Gurmukhi)** or **Punjabi English (Roman)**, keep **Gr
 - Enable **OCR scanned Punjabi PDFs (Gurmukhi)** (on by default).
 - Uses **Tesseract** with `pan` (Punjabi) / Gurmukhi when the PDF has no text layer.
 - Streamlit Cloud: `packages.txt` must list `tesseract-ocr`, `tesseract-ocr-pan`, `poppler-utils`.
-- Use **Max OCR pages** for large books.
+- Large phone-scan books (e.g. 100+ pages, ~7MB) can OOM Cloud if Max OCR pages is too high — start at **15–25 pages**, DPI **150**.
+- Blank covers are skipped; preprocessing (grayscale + autocontrast + PSM 6) improves Gurmukhi OCR.
+- Empty OCR/index no longer crashes the app — you get a clear error instead.
 
 ## Book requirements
 - Prefer Unicode Gurmukhi PDFs or `.txt` / `.md` files.

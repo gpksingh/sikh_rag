@@ -35,8 +35,9 @@ CLI variant with a hardcoded macOS PDF path — use `streamlit_app.py` as the en
   Railway Ollama URL (`https://ollama-production-1333.up.railway.app`) hardcoded in `streamlit_app.py`.
   There is no `.streamlit/secrets.toml` (gitignored); the code falls back to the `OLLAMA_HOST` env var.
 - Switching English ↔ Punjabi clears the in-memory pipeline; each language has its own FAISS directory.
-- Punjabi needs **extractable Unicode Gurmukhi** text. Scanned PDFs (e.g. `Sikh_Religion_Vol_1.pdf`)
-  extract empty text — the app warns when the Gurmukhi ratio is near zero. OCR is not included.
+- Punjabi needs Unicode Gurmukhi text **or OCR**. Phone-scanned books (image-only PDFs) trigger OCR;
+  on Streamlit Cloud keep **Max OCR pages ≤ ~20** and **DPI 150** to avoid OOM “crashes”.
+  Empty OCR/index is rejected with a clear error (no FAISS `IndexError`).
 - With matching English defaults (default book, chunk 1000/30, `nomic-embed-text`), the committed
   `faiss_index_/` fingerprint loads without re-embedding. Punjabi first init embeds with `bge-m3`
   into `faiss_index_punjabi_/` (gitignored).

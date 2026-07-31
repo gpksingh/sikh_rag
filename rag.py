@@ -195,6 +195,38 @@ def resolve_ocr_lang(preferred: str = "pan+eng") -> str:
     return preferred
 
 
+def preprocess_for_ocr(image):
+    """Grayscale + autocontrast — helps scanned Punjabi book photos / covers."""
+    from PIL import ImageOps
+
+    return ImageOps.autocontrast(image.convert("L"))
+
+
+def ocr_image_to_text(image, *, lang: str, psm: int = 6) -> str:
+    """OCR one PIL image with settings that work better on Gurmukhi book scans."""
+    import pytesseract
+
+    prepared = preprocess_for_ocr(image)
+    config = f"--psm {psm}"
+    text = pytesseract.image_to_string(prepared, lang=lang, config=config) or ""
+    # Fallback: default PSM if structured-block mode yields nothing
+    if len(text.strip()) < 20:
+        alt = pytesseract.image_to_string(prepared, lang=lang) or ""
+        if len(alt.strip()) > len(text.strip()):
+            text = alt
+    return text.strip()
+
+
+def filter_nonempty_documents(documents: List[Document], *, min_chars: int = 20) -> List[Document]:
+    """Drop blank / near-blank pages (common on scanned covers and photo pages)."""
+    out = []
+    for doc in documents or []:
+        text = (doc.page_content or "").strip()
+        if len(text) >= min_chars:
+            out.append(Document(page_content=text, metadata=dict(doc.metadata or {})))
+    return out
+
+
 def ocr_pdf_to_documents(
     path: str,
     *,
@@ -206,9 +238,11 @@ def ocr_pdf_to_documents(
     """
     OCR a (scanned) PDF into LangChain Documents, one per page.
     Uses Tesseract with Punjabi (pan) / Gurmukhi language data when available.
+
+    Blank cover/photo pages are skipped. Stops after ``max_pages`` rendered pages
+    (memory-safe for Streamlit Cloud).
     """
     from pdf2image import convert_from_path
-    import pytesseract
 
     ok, detail = ocr_available()
     if not ok:
@@ -227,6 +261,11 @@ def ocr_pdf_to_documents(
     except Exception:
         total_pages = None
 
+    # Cap DPI for large books to reduce Cloud OOM risk
+    effective_dpi = dpi
+    if total_pages and total_pages > 80 and dpi > 150:
+        effective_dpi = 150
+
     if max_pages is not None and total_pages is not None:
         last_page = min(total_pages, max_pages)
     elif max_pages is not None:
@@ -235,8 +274,8 @@ def ocr_pdf_to_documents(
         last_page = total_pages
 
     docs: List[Document] = []
-    # Convert in small batches to limit memory on Streamlit Cloud
-    batch_size = 2
+    # Convert one page at a time — scanned A4 at 200 DPI is large; Cloud OOMs easily
+    batch_size = 1
     start = 1
     end_limit = last_page or 10_000
     while start <= end_limit:
@@ -244,10 +283,10 @@ def ocr_pdf_to_documents(
         try:
             images = convert_from_path(
                 path,
-                dpi=dpi,
+                dpi=effective_dpi,
                 first_page=start,
                 last_page=stop,
-                fmt="png",
+                fmt="jpeg",
                 thread_count=1,
             )
         except Exception as e:
@@ -258,25 +297,37 @@ def ocr_pdf_to_documents(
             break
         for offset, image in enumerate(images):
             page_no = start + offset
-            text = pytesseract.image_to_string(image, lang=ocr_lang) or ""
-            docs.append(
-                Document(
-                    page_content=text.strip(),
-                    metadata={
-                        "source": path,
-                        "page": page_no - 1,
-                        "ocr": True,
-                        "ocr_lang": ocr_lang,
-                    },
+            try:
+                text = ocr_image_to_text(image, lang=ocr_lang)
+            except Exception:
+                text = ""
+            # Keep empty pages out of the index — they create 0 chunks / FAISS crashes
+            if len(text) >= 20:
+                docs.append(
+                    Document(
+                        page_content=text,
+                        metadata={
+                            "source": path,
+                            "page": page_no - 1,
+                            "ocr": True,
+                            "ocr_lang": ocr_lang,
+                        },
+                    )
                 )
-            )
             if progress_callback:
                 total_for_progress = last_page or page_no
                 progress_callback(page_no, total_for_progress, text)
+            # Free page image ASAP
+            try:
+                image.close()
+            except Exception:
+                pass
+        del images
         start = stop + 1
-        if total_pages is None and len(images) < batch_size:
+        if total_pages is None and stop >= end_limit:
             break
-        if max_pages is not None and len(docs) >= max_pages:
+        # Stop once we've scanned max_pages source pages (not nonempty count)
+        if max_pages is not None and start > (max_pages if total_pages is None else last_page):
             break
     return docs
 
@@ -323,14 +374,24 @@ def load_pdf_with_optional_ocr(
         max_pages=max_ocr_pages,
         progress_callback=progress_callback,
     )
+    ocr_docs = filter_nonempty_documents(ocr_docs, min_chars=20)
     info.update(
         {
             "ocr_used": True,
             "ocr_lang": resolve_ocr_lang(ocr_lang),
             "final_pages": len(ocr_docs),
             "reason": "forced" if force_ocr else "weak_text_layer",
+            "pdf_pages": info.get("text_layer_pages"),
+            "max_ocr_pages": max_ocr_pages,
         }
     )
+    if not ocr_docs:
+        raise RuntimeError(
+            "OCR ran but found no readable Punjabi text. "
+            "This often happens with stylized covers or very light scans. "
+            "Try raising Max OCR pages / OCR DPI, or start OCR deeper into the book "
+            "(Force OCR after confirming later pages have clear Gurmukhi)."
+        )
     return ocr_docs, info
 
 
@@ -380,6 +441,12 @@ def split_documents(
     chunk_overlap: int,
     language: str,
 ) -> List[Document]:
+    documents = filter_nonempty_documents(documents, min_chars=1)
+    if not documents:
+        raise RuntimeError(
+            "No text was extracted from the book, so there is nothing to index. "
+            "For scanned Punjabi PDFs, enable OCR and raise Max OCR pages."
+        )
     if language == "punjabi":
         # Recursive splitter handles Gurmukhi better than a single newline separator.
         splitter = RecursiveCharacterTextSplitter(
@@ -393,7 +460,14 @@ def split_documents(
             chunk_overlap=chunk_overlap,
             separator="\n",
         )
-    return splitter.split_documents(documents=documents)
+    chunks = splitter.split_documents(documents=documents)
+    chunks = filter_nonempty_documents(chunks, min_chars=1)
+    if not chunks:
+        raise RuntimeError(
+            "Document splitting produced 0 chunks (empty pages only). "
+            "Enable OCR for scanned books or upload a Unicode Gurmukhi PDF/TXT."
+        )
+    return chunks
 
 
 def is_low_quality_gurmukhi_answer(text: str) -> bool:
@@ -604,6 +678,9 @@ def gurmukhi_to_punjabi_english(text: str, *, style: str = "simple") -> str:
     """
     if not text:
         return ""
+    # Guard against pathological OCR dumps in UI rendering
+    if len(text) > 20000:
+        text = text[:20000] + "…"
     try:
         from indic_transliteration import sanscript
         from indic_transliteration.sanscript import transliterate
