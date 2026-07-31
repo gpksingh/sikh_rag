@@ -417,11 +417,20 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.stop()
 
         if load_info.get("ocr_used"):
+            pdf_pages = load_info.get("pdf_pages") or load_info.get("text_layer_pages")
             st.success(
                 f"🖨️ OCR used ({load_info.get('ocr_lang')}) — "
-                f"{load_info.get('final_pages', len(documents))} page(s) recognized "
-                f"(reason: {load_info.get('reason')})"
+                f"{load_info.get('final_pages', len(documents))} readable page(s) "
+                f"(scanned up to {load_info.get('max_ocr_pages') or 'all'}"
+                f"{f' of {pdf_pages} PDF pages' if pdf_pages else ''}; "
+                f"reason: {load_info.get('reason')})"
             )
+            if pdf_pages and load_info.get("max_ocr_pages") and pdf_pages > load_info["max_ocr_pages"]:
+                st.info(
+                    f"ℹ️ This PDF has **{pdf_pages}** pages; only the first "
+                    f"**{load_info['max_ocr_pages']}** were OCR’d. "
+                    "Raise Max OCR pages to index more (watch Cloud memory)."
+                )
 
         stats = rag_helpers.documents_gurmukhi_stats(documents)
         if language == "punjabi":
