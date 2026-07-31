@@ -12,10 +12,14 @@ Shared helpers live in `rag.py`. Sample booklet:
 
 ## Recommended models (Ollama)
 ```bash
-ollama pull bge-m3          # multilingual embeddings (required for good Punjabi retrieval)
+ollama pull bge-m3          # best multilingual embeddings for Punjabi (optional but preferred)
+ollama pull nomic-embed-text  # fallback if bge-m3 is not on the host (e.g. Railway default)
 ollama pull qwen2.5:1.5b    # optional; used for LLM paraphrase mode
 ollama pull qwen2.5:3b      # better paraphrase quality when you have the RAM/CPU budget
 ```
+
+If the Ollama host does **not** have `bge-m3`, the app automatically falls back to an installed
+embedding model (usually `nomic-embed-text`) and shows a sidebar warning.
 
 ## Run
 ```bash
