@@ -1,14 +1,20 @@
 # Punjabi RAG notes
 
 ## What this is
-The Streamlit app (`streamlit_app.py`) now supports a **ਪੰਜਾਬੀ (Punjabi)** language mode that:
-1. Indexes Punjabi books (Unicode Gurmukhi PDF/TXT)
-2. Retrieves with a multilingual embedding model (`bge-m3` by default)
-3. Answers in Gurmukhi using language-aware prompts
+The Streamlit app (`streamlit_app.py`) is a Punjabi RAG that:
+1. Indexes Punjabi books (Unicode Gurmukhi PDF/TXT, or scanned PDFs via OCR)
+2. Retrieves with a multilingual embedding model (`bge-m3` when available)
+3. Answers in either **Gurmukhi** or **Punjabi English (Roman)**
 
 Shared helpers live in `rag.py`. Sample booklet:
 - `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`
 - `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.txt`
+
+## Answer script (only two options)
+- **ਪੰਜਾਬੀ (Gurmukhi):** answers in Gurmukhi script
+- **Punjabi English (Roman):** same Punjabi answer in English letters (e.g. `guru nanak`) — not a translation
+
+There is no separate English-language mode.
 
 ## Recommended models (Ollama)
 ```bash
@@ -25,31 +31,27 @@ embedding model (usually `nomic-embed-text`) and shows a sidebar warning.
 ```bash
 OLLAMA_HOST=http://localhost:11434 .venv/bin/streamlit run streamlit_app.py
 ```
-In the sidebar pick **ਪੰਜਾਬੀ (Punjabi)**, keep **Grounded quote (recommended)** for fast faithful answers,
-initialize, then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?`
+Pick **ਪੰਜਾਬੀ (Gurmukhi)** or **Punjabi English (Roman)**, keep **Grounded quote**, initialize,
+then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿ� keep **Grounded quote**, initialize,
+then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?`
 
 **Answer styles**
-- **Grounded quote (recommended):** returns the best retrieved Gurmukhi passage (~1s). Best for faithfulness on CPU.
-- **LLM paraphrase:** asks the local model to rewrite; falls back to a quote if output is empty/looping/weakly grounded. Small models struggle with Gurmukhi generation — prefer `qwen2.5:3b+` if you use this mode.
-
-**Answer script (only two options)**
-- **ਪੰਜਾਬੀ (Gurmukhi):** answers in Gurmukhi script.
-- **Punjabi English (Roman):** same Punjabi answer in English letters (e.g. `guru nanak`) — not a translation.
+- **Grounded quote (recommended):** returns the best retrieved Gurmukhi passage (~1s).
+- **LLM paraphrase:** asks the local model to rewrite; falls back to a quote if weak.
 
 **Upload a Punjabi PDF**
-- In ਪੰਜਾਬੀ mode, choose **Upload Punjabi PDF**, then pick a PDF/TXT.
+- Choose **Upload Punjabi PDF**, then pick a PDF/TXT.
 - Click **Initialize RAG Pipeline** after uploading.
 
 **OCR for scanned Gurmukhi books**
-- Enable **OCR scanned Punjabi PDFs (Gurmukhi)** (on by default in Punjabi mode).
-- If the PDF has no selectable text, the app runs **Tesseract** with `pan` (Punjabi) / Gurmukhi.
-- Streamlit Cloud needs `packages.txt` entries: `tesseract-ocr`, `tesseract-ocr-pan`, `poppler-utils`.
-- OCR is slower and memory-heavy — use **Max OCR pages** for large books.
-- Tip: text-layer Unicode PDFs skip OCR automatically (unless you check **Always OCR**).
+- Enable **OCR scanned Punjabi PDFs (Gurmukhi)** (on by default).
+- Uses **Tesseract** with `pan` (Punjabi) / Gurmukhi when the PDF has no text layer.
+- Streamlit Cloud: `packages.txt` must list `tesseract-ocr`, `tesseract-ocr-pan`, `poppler-utils`.
+- Use **Max OCR pages** for large books.
 
 ## Book requirements
-- Prefer **text-extractable** Unicode Gurmukhi PDFs or `.txt` / `.md` files.
-- Scanned/image-only PDFs extract as empty text — the app warns when Gurmukhi ratio is near zero. OCR is not bundled yet.
+- Prefer Unicode Gurmukhi PDFs or `.txt` / `.md` files.
+- Scanned/image-only PDFs are handled by OCR when enabled.
 
 ## Regenerate sample booklet
 ```bash
