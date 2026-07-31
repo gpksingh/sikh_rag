@@ -7,6 +7,9 @@ import time
 
 import rag as rag_helpers
 
+# MUST be the first Streamlit command (Cloud fails otherwise).
+st.set_page_config(page_title="Sikh & Punjabi RAG", layout="wide")
+
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
     OLLAMA_HOST = st.secrets.get("OLLAMA_HOST", "https://ollama-production-1333.up.railway.app").strip()
@@ -17,13 +20,6 @@ except (KeyError, FileNotFoundError, Exception):
 
 # Build auth headers if API key is present
 OLLAMA_HEADERS = {"Authorization": f"Bearer {OLLAMA_API_KEY}"} if OLLAMA_API_KEY else {}
-
-# Debug: show if key is loaded (shows only first/last 4 chars for security)
-if OLLAMA_API_KEY:
-    masked = OLLAMA_API_KEY[:4] + "..." + OLLAMA_API_KEY[-4:]
-    st.sidebar.caption(f"🔑 API Key loaded: `{masked}`")
-else:
-    st.sidebar.warning("⚠️ No API Key found in secrets!")
 
 # Function to test Ollama connection
 def test_ollama_connection(base_url, api_key="", timeout=10):
@@ -57,12 +53,9 @@ def benchmark_ollama(base_url: str, timeout: int = 15) -> dict:
             return {"status": "error", "latency_ms": None, "code": resp.status_code}
     except requests.exceptions.Timeout:
         return {"status": "timeout", "latency_ms": None}
-    except Exception as e:
+    except Exception:
         return {"status": "offline", "latency_ms": None}
 
-
-# Page config
-st.set_page_config(page_title="Sikh & Punjabi RAG", layout="wide")
 
 # Custom CSS
 st.markdown("""
@@ -85,6 +78,12 @@ with st.sidebar:
         index=1,
         help="Punjabi mode indexes Gurmukhi books and answers in Gurmukhi.",
     )
+    # API key status (after set_page_config)
+    if OLLAMA_API_KEY:
+        masked = OLLAMA_API_KEY[:4] + "..." + OLLAMA_API_KEY[-4:]
+        st.caption(f"🔑 API Key loaded: `{masked}`")
+    else:
+        st.caption("ℹ️ No OLLAMA_API_KEY in secrets (OK if your Ollama host is open).")
 language = "punjabi" if language_label.startswith("ਪੰਜਾਬੀ") else "english"
 
 # Title and description
