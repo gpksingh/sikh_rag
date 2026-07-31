@@ -227,3 +227,57 @@ Return ONLY the rewritten question, nothing else."""
 
 def faiss_dir_for(language: str) -> str:
     return "faiss_index_punjabi_" if language == "punjabi" else "faiss_index_"
+
+
+def gurmukhi_to_english_transliteration(text: str, *, style: str = "simple") -> str:
+    """
+    Transliterate Gurmukhi text to Roman/English letters.
+
+    style:
+      - "simple": ASCII-friendly (no diacritics) for general English readers
+      - "iast": scholarly IAST with diacritics (ā, ī, ṃ, …)
+    Non-Gurmukhi characters are preserved.
+    """
+    if not text:
+        return ""
+    try:
+        from indic_transliteration import sanscript
+        from indic_transliteration.sanscript import transliterate
+    except ImportError as e:
+        raise RuntimeError(
+            "indic-transliteration is required for English transliteration. "
+            "Install with: pip install indic-transliteration"
+        ) from e
+
+    # Transliterate per contiguous Gurmukhi run so Latin/punctuation stays intact.
+    out = []
+    buf = []
+
+    def flush():
+        if not buf:
+            return
+        chunk = "".join(buf)
+        buf.clear()
+        roman = transliterate(chunk, sanscript.GURMUKHI, sanscript.IAST)
+        # Indic danda often becomes '|'
+        roman = roman.replace("|", ".")
+        if style != "iast":
+            import unicodedata
+
+            roman = unicodedata.normalize("NFD", roman)
+            roman = "".join(c for c in roman if unicodedata.category(c) != "Mn")
+            # Common nasal mark left as 'M' in some paths → 'n'
+            roman = roman.replace("M", "n").replace("m̐", "n")
+        out.append(roman)
+
+    for ch in text:
+        if is_gurmukhi_char(ch) or ch in ("੍", "ੰ", "ੱ", "ਂ", "ਃ"):
+            buf.append(ch)
+        else:
+            flush()
+            out.append(ch)
+    flush()
+    result = "".join(out)
+    result = result.replace("|", ".").replace("।", ".")
+    # Tidy whitespace around newlines
+    return "\n".join(line.rstrip() for line in result.splitlines())

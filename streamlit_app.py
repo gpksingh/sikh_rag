@@ -254,8 +254,32 @@ with st.sidebar:
             help="Grounded quote returns the best retrieved Gurmukhi passage (fast & faithful). "
                  "LLM paraphrase needs a stronger model (qwen2.5:3b+) and may fall back to a quote.",
         )
+        show_transliteration = st.checkbox(
+            "Show English transliteration",
+            value=True,
+            help="Also show a Roman/English reading of Gurmukhi answers and sources.",
+        )
+        if show_transliteration:
+            transliteration_style = st.selectbox(
+                "Transliteration style",
+                ["Simple English (ASCII)", "Scholarly (IAST)"],
+                index=0,
+                help="Simple strips diacritics (guru nanak). IAST keeps ā ī ṃ etc.",
+            )
+            transliteration_display = st.radio(
+                "Transliteration display",
+                ["Gurmukhi + English", "English only", "Gurmukhi only"],
+                index=0,
+                help="Choose whether to show Gurmukhi, Roman transliteration, or both.",
+            )
+        else:
+            transliteration_style = "Simple English (ASCII)"
+            transliteration_display = "Gurmukhi only"
     else:
         punjabi_answer_style = "LLM paraphrase"
+        show_transliteration = False
+        transliteration_style = "Simple English (ASCII)"
+        transliteration_display = "Gurmukhi only"
 
     st.markdown("---")
     st.header("🔬 RAG Mode")
@@ -640,6 +664,40 @@ def render_perf_metrics(perf: dict):
     )
 
 
+def _translit_scheme() -> str:
+    return "iast" if transliteration_style.startswith("Scholarly") else "simple"
+
+
+def render_punjabi_text(text: str, *, preview_chars: int | None = None):
+    """Render Gurmukhi text with optional English transliteration."""
+    body = text if preview_chars is None else (text[:preview_chars] + ("..." if len(text) > preview_chars else ""))
+    show_gurmukhi = transliteration_display != "English only"
+    show_roman = show_transliteration and transliteration_display != "Gurmukhi only"
+
+    if show_gurmukhi:
+        st.write(body)
+    if show_roman:
+        try:
+            roman = rag_helpers.gurmukhi_to_english_transliteration(body, style=_translit_scheme())
+        except Exception as e:
+            st.caption(f"Transliteration unavailable: {e}")
+            if not show_gurmukhi:
+                st.write(body)
+            return
+        if transliteration_display == "English only":
+            st.write(roman)
+        else:
+            st.caption("English transliteration")
+            st.markdown(f"*{roman}*")
+
+
+def render_source_docs(docs, *, preview: int = 500, label_prefix: str = "Document"):
+    for i, doc in enumerate(docs, 1):
+        st.markdown(f"**{label_prefix} {i}:**")
+        render_punjabi_text(doc.page_content, preview_chars=preview)
+        st.markdown("---")
+
+
 def render_stats_card(stats: dict, label: str, color: str):
     """Render a context window stats card."""
     st.markdown(f"""
@@ -734,12 +792,15 @@ if st.session_state.initialized:
                 render_perf_metrics(rag_perf)
                 render_stats_card(rag_stats, "Context Stats", "#111111")
                 st.markdown("**Answer:**")
-                st.write(rag_answer)
+                render_punjabi_text(rag_answer) if active_lang == "punjabi" else st.write(rag_answer)
                 with st.expander("📖 Source Documents (RAG)"):
-                    for i, doc in enumerate(rag_docs, 1):
-                        st.markdown(f"**Doc {i}:**")
-                        st.text(doc.page_content[:400] + "...")
-                        st.markdown("---")
+                    if active_lang == "punjabi":
+                        render_source_docs(rag_docs, preview=400, label_prefix="Doc")
+                    else:
+                        for i, doc in enumerate(rag_docs, 1):
+                            st.markdown(f"**Doc {i}:**")
+                            st.text(doc.page_content[:400] + "...")
+                            st.markdown("---")
 
             with col_ref:
                 st.markdown("#### 🔬 ReFRAG")
@@ -749,12 +810,15 @@ if st.session_state.initialized:
                     for title, detail in ref_steps:
                         st.markdown(f"**{title}:** {detail}")
                 st.markdown("**Answer:**")
-                st.write(ref_answer)
+                render_punjabi_text(ref_answer) if active_lang == "punjabi" else st.write(ref_answer)
                 with st.expander("📖 Source Documents (ReFRAG)"):
-                    for i, doc in enumerate(ref_docs, 1):
-                        st.markdown(f"**Doc {i}:**")
-                        st.text(doc.page_content[:400] + "...")
-                        st.markdown("---")
+                    if active_lang == "punjabi":
+                        render_source_docs(ref_docs, preview=400, label_prefix="Doc")
+                    else:
+                        for i, doc in enumerate(ref_docs, 1):
+                            st.markdown(f"**Doc {i}:**")
+                            st.text(doc.page_content[:400] + "...")
+                            st.markdown("---")
 
         # ── ReFRAG only ───────────────────────────────────────────────────────
         elif rag_mode == "ReFRAG":
@@ -775,13 +839,16 @@ if st.session_state.initialized:
                         for title, detail in steps:
                             st.markdown(f"**{title}:** {detail}")
                     render_stats_card(stats, "Context Window Stats", "#111111")
-                    st.markdown("### Answer")
-                    st.write(answer)
+                    st.markdown("### ਜਵਾਬ" if active_lang == "punjabi" else "### Answer")
+                    render_punjabi_text(answer) if active_lang == "punjabi" else st.write(answer)
                     with st.expander("📖 Source Documents used"):
-                        for i, doc in enumerate(final_docs, 1):
-                            st.markdown(f"**Document {i}:**")
-                            st.text(doc.page_content[:500] + "...")
-                            st.markdown("---")
+                        if active_lang == "punjabi":
+                            render_source_docs(final_docs, preview=500)
+                        else:
+                            for i, doc in enumerate(final_docs, 1):
+                                st.markdown(f"**Document {i}:**")
+                                st.text(doc.page_content[:500] + "...")
+                                st.markdown("---")
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
 
@@ -801,12 +868,15 @@ if st.session_state.initialized:
                     render_perf_metrics(perf)
                     render_stats_card(stats, "Context Window Stats", "#111111")
                     st.markdown("### ਜਵਾਬ" if active_lang == "punjabi" else "### Answer")
-                    st.write(response)
+                    render_punjabi_text(response) if active_lang == "punjabi" else st.write(response)
                     with st.expander("📖 Source Documents"):
-                        for i, doc in enumerate(retrieved_docs, 1):
-                            st.markdown(f"**Document {i}:**")
-                            st.text(doc.page_content[:500] + "...")
-                            st.markdown("---")
+                        if active_lang == "punjabi":
+                            render_source_docs(retrieved_docs, preview=500)
+                        else:
+                            for i, doc in enumerate(retrieved_docs, 1):
+                                st.markdown(f"**Document {i}:**")
+                                st.text(doc.page_content[:500] + "...")
+                                st.markdown("---")
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
 

@@ -28,6 +28,12 @@ initialize, then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪ�
 - **Grounded quote (recommended):** returns the best retrieved Gurmukhi passage (~1s). Best for faithfulness on CPU.
 - **LLM paraphrase:** asks the local model to rewrite; falls back to a quote if output is empty/looping/weakly grounded. Small models struggle with Gurmukhi generation — prefer `qwen2.5:3b+` if you use this mode.
 
+**English transliteration (optional)**
+- Enable **Show English transliteration** in the Punjabi sidebar.
+- Display modes: **Gurmukhi + English**, **English only**, or **Gurmukhi only**.
+- Styles: **Simple English (ASCII)** (default) or **Scholarly (IAST)** with diacritics.
+- Uses the `indic-transliteration` package (Gurmukhi → Roman).
+
 ## Book requirements
 - Prefer **text-extractable** Unicode Gurmukhi PDFs or `.txt` / `.md` files.
 - Scanned/image-only PDFs extract as empty text — the app warns when Gurmukhi ratio is near zero. OCR is not bundled yet.
