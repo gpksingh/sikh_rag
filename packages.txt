@@ -1,0 +1,6 @@
+# System packages for Streamlit Cloud / Debian-based deploys
+# Enables Punjabi (Gurmukhi) OCR of scanned PDFs
+tesseract-ocr
+tesseract-ocr-pan
+tesseract-ocr-script-guru
+poppler-utils

@@ -318,11 +318,51 @@ with st.sidebar:
         else:
             transliteration_style = "Simple (ASCII)"
             transliteration_display = "Gurmukhi only"
+
+        st.markdown("---")
+        st.subheader("🖨️ OCR (scanned books)")
+        ocr_ok, ocr_detail = rag_helpers.ocr_available()
+        enable_ocr = st.checkbox(
+            "OCR scanned Punjabi PDFs (Gurmukhi)",
+            value=True,
+            help="If the PDF has no selectable text, run Tesseract OCR with Punjabi (pan) to read Gurmukhi pages.",
+        )
+        force_ocr = st.checkbox(
+            "Always OCR (ignore text layer)",
+            value=False,
+            help="Force OCR even when the PDF already has a text layer.",
+        )
+        max_ocr_pages = st.slider(
+            "Max OCR pages",
+            1,
+            200,
+            40,
+            1,
+            help="Limit pages for OCR to control time/memory (Streamlit Cloud is limited).",
+        )
+        ocr_dpi = st.select_slider(
+            "OCR DPI",
+            options=[150, 200, 250, 300],
+            value=200,
+            help="Higher DPI is more accurate but slower and uses more memory.",
+        )
+        if not ocr_ok:
+            st.warning(
+                f"⚠️ OCR system packages not available here ({ocr_detail}). "
+                "On Streamlit Cloud, ensure `packages.txt` includes tesseract-ocr, "
+                "tesseract-ocr-pan, and poppler-utils."
+            )
+        else:
+            st.caption(f"OCR ready · Tesseract lang `{rag_helpers.resolve_ocr_lang('pan+eng')}`")
     else:
         punjabi_answer_style = "LLM paraphrase"
         show_punjabi_english = False
         transliteration_style = "Simple (ASCII)"
         transliteration_display = "Gurmukhi only"
+        enable_ocr = False
+        force_ocr = False
+        max_ocr_pages = 40
+        ocr_dpi = 200
 
     st.markdown("---")
     st.header("🔬 RAG Mode")
@@ -348,28 +388,83 @@ with st.sidebar:
 # Initialize RAG pipeline
 if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
     try:
+        load_info = {"ocr_used": False}
+
+        def _ocr_progress(page_no, total_pages, _text):
+            # Lightweight progress updates during OCR
+            frac = min(page_no / max(total_pages, 1), 1.0)
+            st.session_state["_ocr_progress"] = (page_no, total_pages, frac)
+
         # Check if user uploaded a file or using default
         if pdf_source == upload_label and uploaded_file is not None:
-            with st.spinner("Loading uploaded file..."):
-                documents, source_name = rag_helpers.load_uploaded_file(uploaded_file)
+            ocr_box = st.empty()
+            progress_bar = st.progress(0.0) if (language == "punjabi" and enable_ocr) else None
+
+            def _cb(page_no, total_pages, text):
+                if progress_bar is not None:
+                    progress_bar.progress(min(page_no / max(total_pages, 1), 1.0))
+                ocr_box.caption(f"OCR page {page_no}/{total_pages}…")
+
+            with st.spinner("Loading uploaded file (OCR runs automatically for scanned Punjabi PDFs)..."):
+                documents, source_name, load_info = rag_helpers.load_uploaded_file(
+                    uploaded_file,
+                    language=language,
+                    use_ocr=(language == "punjabi" and enable_ocr),
+                    force_ocr=(language == "punjabi" and force_ocr),
+                    ocr_lang="pan+eng",
+                    ocr_dpi=ocr_dpi,
+                    max_ocr_pages=max_ocr_pages,
+                    progress_callback=_cb if (language == "punjabi" and enable_ocr) else None,
+                )
                 st.success(f"✓ Loaded {len(documents)} document unit(s) from '{source_name}'")
+            if progress_bar is not None:
+                progress_bar.empty()
+            ocr_box.empty()
             _source = source_name
 
         elif pdf_source == source_label and pdf_path:
             if not os.path.exists(pdf_path):
                 st.error(f"❌ Book not found at `{pdf_path}`")
                 st.stop()
+            ocr_box = st.empty()
+            progress_bar = st.progress(0.0) if (language == "punjabi" and enable_ocr) else None
+
+            def _cb2(page_no, total_pages, text):
+                if progress_bar is not None:
+                    progress_bar.progress(min(page_no / max(total_pages, 1), 1.0))
+                ocr_box.caption(f"OCR page {page_no}/{total_pages}…")
+
             with st.spinner("Loading book..."):
                 if pdf_path.lower().endswith((".txt", ".md")):
                     documents = rag_helpers.load_text_file(pdf_path)
+                    load_info = {"ocr_used": False, "reason": "text_file"}
                 else:
-                    documents = rag_helpers.load_pdf(pdf_path)
+                    documents, load_info = rag_helpers.load_pdf_with_optional_ocr(
+                        pdf_path,
+                        language=language,
+                        use_ocr=(language == "punjabi" and enable_ocr),
+                        force_ocr=(language == "punjabi" and force_ocr),
+                        ocr_lang="pan+eng",
+                        ocr_dpi=ocr_dpi,
+                        max_ocr_pages=max_ocr_pages,
+                        progress_callback=_cb2 if (language == "punjabi" and enable_ocr) else None,
+                    )
                 st.success(f"✓ Loaded {len(documents)} pages/sections")
+            if progress_bar is not None:
+                progress_bar.empty()
+            ocr_box.empty()
             _source = pdf_path
 
         else:
             st.error("❌ Please select a book source and upload a file or select a book!")
             st.stop()
+
+        if load_info.get("ocr_used"):
+            st.success(
+                f"🖨️ OCR used ({load_info.get('ocr_lang')}) — "
+                f"{load_info.get('final_pages', len(documents))} page(s) recognized "
+                f"(reason: {load_info.get('reason')})"
+            )
 
         stats = rag_helpers.documents_gurmukhi_stats(documents)
         if language == "punjabi":
@@ -379,8 +474,9 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             )
             if stats["ratio"] < 0.05:
                 st.warning(
-                    "⚠️ Little or no Gurmukhi text was extracted. Scanned/image PDFs need OCR "
-                    "(or a Unicode text/PDF). Punjabi answers will be poor without extractable text."
+                    "⚠️ Little or no Gurmukhi text after loading. "
+                    "Try enabling OCR, raising OCR DPI, or confirm the PDF is Gurmukhi "
+                    "(not Shahmukhi / image of poor quality)."
                 )
         elif stats["has_gurmukhi"]:
             st.caption(f"Detected some Gurmukhi in the source ({stats['ratio']:.0%} of letters).")
@@ -410,6 +506,10 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                     "chunk_overlap": chunk_overlap,
                     "embedding": embedding_model,
                     "language": language,
+                    "ocr_used": bool(load_info.get("ocr_used")),
+                    "force_ocr": bool(language == "punjabi" and force_ocr),
+                    "max_ocr_pages": max_ocr_pages if language == "punjabi" else None,
+                    "ocr_dpi": ocr_dpi if language == "punjabi" else None,
                 },
                 sort_keys=True,
             ).encode()

@@ -40,8 +40,15 @@ initialize, then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪ�
 - Uses the `indic-transliteration` package (Gurmukhi → Roman).
 
 **Upload a Punjabi PDF**
-- In ਪੰਜਾਬੀ mode, choose **Upload Punjabi PDF**, then pick a PDF/TXT with extractable Gurmukhi text.
+- In ਪੰਜਾਬੀ mode, choose **Upload Punjabi PDF**, then pick a PDF/TXT.
 - Click **Initialize RAG Pipeline** after uploading.
+
+**OCR for scanned Gurmukhi books**
+- Enable **OCR scanned Punjabi PDFs (Gurmukhi)** (on by default in Punjabi mode).
+- If the PDF has no selectable text, the app runs **Tesseract** with `pan` (Punjabi) / Gurmukhi.
+- Streamlit Cloud needs `packages.txt` entries: `tesseract-ocr`, `tesseract-ocr-pan`, `poppler-utils`.
+- OCR is slower and memory-heavy — use **Max OCR pages** for large books.
+- Tip: text-layer Unicode PDFs skip OCR automatically (unless you check **Always OCR**).
 
 ## Book requirements
 - Prefer **text-extractable** Unicode Gurmukhi PDFs or `.txt` / `.md` files.

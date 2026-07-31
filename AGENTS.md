@@ -15,7 +15,8 @@ CLI variant with a hardcoded macOS PDF path — use `streamlit_app.py` as the en
   fast and faithful on CPU). **LLM paraphrase** is optional and falls back to a quote when generation
   is weak. Optional **Show Punjabi English (Roman)** shows the same Punjabi words in Latin
   letters (e.g. `guru nanak`) — not an English translation. Use **Upload Punjabi PDF** in the
-  sidebar to index your own Gurmukhi books. Sample booklet:
+  sidebar to index your own Gurmukhi books. Scanned books: enable **OCR scanned Punjabi PDFs**
+  (Tesseract `pan`; needs `packages.txt` on Streamlit Cloud). Sample booklet:
   `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.
 
 ### Environment (already provisioned in the VM snapshot)

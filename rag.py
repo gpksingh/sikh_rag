@@ -80,6 +80,7 @@ def resolve_embedding_choices(
 
 PUNJABI_DEFAULT_BOOKS = {
     "ਸਿੱਖ ਧਰਮ: ਜਾਣ-ਪਛਾਣ (Punjabi sample)": "punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf",
+    "Scanned Gurmukhi sample (OCR test)": "punjabi_books/scanned_gurmukhi_sample.pdf",
 }
 
 ENGLISH_DEFAULT_BOOKS = {
@@ -131,23 +132,245 @@ def load_text_file(path: str) -> List[Document]:
     return TextLoader(path, encoding="utf-8").load()
 
 
-def load_uploaded_file(uploaded_file) -> Tuple[List[Document], str]:
-    """Save an uploaded Streamlit file to a temp path and load it. Returns (docs, source_name)."""
+def pdf_needs_ocr(
+    docs: List[Document],
+    *,
+    language: str = "punjabi",
+    min_chars_per_page: int = 40,
+    min_gurmukhi_ratio: float = 0.05,
+) -> bool:
+    """True when the PDF text layer is empty/weak (typical of scanned books)."""
+    if not docs:
+        return True
+    text = "\n".join((d.page_content or "") for d in docs)
+    avg_chars = len(text.strip()) / max(len(docs), 1)
+    if avg_chars < min_chars_per_page:
+        return True
+    if language == "punjabi":
+        return gurmukhi_stats(text)["ratio"] < min_gurmukhi_ratio
+    return False
+
+
+def ocr_available() -> Tuple[bool, str]:
+    """Return (ok, detail) for Tesseract + Punjabi language data."""
+    try:
+        import importlib.util
+        import pytesseract
+
+        if importlib.util.find_spec("pdf2image") is None:
+            return False, "Missing Python package: pdf2image"
+    except ImportError as e:
+        return False, f"Missing Python package: {e}"
+    try:
+        langs = set(pytesseract.get_languages(config=""))
+    except Exception as e:
+        return False, f"Tesseract not available: {e}"
+    if "pan" not in langs and "Gurmukhi" not in langs:
+        return False, "Tesseract is installed but Punjabi/Gurmukhi data is missing (need tesseract-ocr-pan)."
+    return True, "ok"
+
+
+def resolve_ocr_lang(preferred: str = "pan+eng") -> str:
+    """Pick a Tesseract language string based on installed tessdata."""
+    try:
+        import pytesseract
+
+        langs = set(pytesseract.get_languages(config=""))
+    except Exception:
+        return preferred
+    parts = []
+    for code in preferred.split("+"):
+        if code in langs:
+            parts.append(code)
+        elif code == "pan" and "Gurmukhi" in langs:
+            parts.append("Gurmukhi")
+    if parts:
+        return "+".join(parts)
+    if "pan" in langs:
+        return "pan"
+    if "Gurmukhi" in langs:
+        return "Gurmukhi"
+    if "eng" in langs:
+        return "eng"
+    return preferred
+
+
+def ocr_pdf_to_documents(
+    path: str,
+    *,
+    lang: str = "pan+eng",
+    dpi: int = 200,
+    max_pages: int | None = 60,
+    progress_callback=None,
+) -> List[Document]:
+    """
+    OCR a (scanned) PDF into LangChain Documents, one per page.
+    Uses Tesseract with Punjabi (pan) / Gurmukhi language data when available.
+    """
+    from pdf2image import convert_from_path
+    import pytesseract
+
+    ok, detail = ocr_available()
+    if not ok:
+        raise RuntimeError(
+            f"OCR is not available ({detail}). "
+            "Install system packages: tesseract-ocr tesseract-ocr-pan poppler-utils "
+            "and Python packages: pytesseract pdf2image"
+        )
+
+    ocr_lang = resolve_ocr_lang(lang)
+    # First pass: get page count without loading all images into RAM
+    try:
+        from pypdf import PdfReader
+
+        total_pages = len(PdfReader(path).pages)
+    except Exception:
+        total_pages = None
+
+    if max_pages is not None and total_pages is not None:
+        last_page = min(total_pages, max_pages)
+    elif max_pages is not None:
+        last_page = max_pages
+    else:
+        last_page = total_pages
+
+    docs: List[Document] = []
+    # Convert in small batches to limit memory on Streamlit Cloud
+    batch_size = 2
+    start = 1
+    end_limit = last_page or 10_000
+    while start <= end_limit:
+        stop = min(start + batch_size - 1, end_limit)
+        try:
+            images = convert_from_path(
+                path,
+                dpi=dpi,
+                first_page=start,
+                last_page=stop,
+                fmt="png",
+                thread_count=1,
+            )
+        except Exception as e:
+            if start == 1:
+                raise RuntimeError(f"Failed to render PDF pages for OCR: {e}") from e
+            break
+        if not images:
+            break
+        for offset, image in enumerate(images):
+            page_no = start + offset
+            text = pytesseract.image_to_string(image, lang=ocr_lang) or ""
+            docs.append(
+                Document(
+                    page_content=text.strip(),
+                    metadata={
+                        "source": path,
+                        "page": page_no - 1,
+                        "ocr": True,
+                        "ocr_lang": ocr_lang,
+                    },
+                )
+            )
+            if progress_callback:
+                total_for_progress = last_page or page_no
+                progress_callback(page_no, total_for_progress, text)
+        start = stop + 1
+        if total_pages is None and len(images) < batch_size:
+            break
+        if max_pages is not None and len(docs) >= max_pages:
+            break
+    return docs
+
+
+def load_pdf_with_optional_ocr(
+    path: str,
+    *,
+    language: str = "punjabi",
+    use_ocr: bool = True,
+    force_ocr: bool = False,
+    ocr_lang: str = "pan+eng",
+    ocr_dpi: int = 200,
+    max_ocr_pages: int | None = 60,
+    progress_callback=None,
+) -> Tuple[List[Document], dict]:
+    """
+    Load a PDF; if text extraction yields little/no Gurmukhi (or force_ocr), run OCR.
+    Returns (documents, info) where info describes whether OCR ran.
+    """
+    info = {
+        "ocr_used": False,
+        "ocr_forced": force_ocr,
+        "ocr_lang": None,
+        "text_layer_pages": 0,
+        "final_pages": 0,
+        "reason": "text_layer",
+    }
+    docs = load_pdf(path)
+    info["text_layer_pages"] = len(docs)
+    needs = force_ocr or (use_ocr and pdf_needs_ocr(docs, language=language))
+    if not needs:
+        info["final_pages"] = len(docs)
+        return docs, info
+
+    if not use_ocr and not force_ocr:
+        info["final_pages"] = len(docs)
+        info["reason"] = "ocr_disabled"
+        return docs, info
+
+    ocr_docs = ocr_pdf_to_documents(
+        path,
+        lang=ocr_lang,
+        dpi=ocr_dpi,
+        max_pages=max_ocr_pages,
+        progress_callback=progress_callback,
+    )
+    info.update(
+        {
+            "ocr_used": True,
+            "ocr_lang": resolve_ocr_lang(ocr_lang),
+            "final_pages": len(ocr_docs),
+            "reason": "forced" if force_ocr else "weak_text_layer",
+        }
+    )
+    return ocr_docs, info
+
+
+def load_uploaded_file(
+    uploaded_file,
+    *,
+    language: str = "english",
+    use_ocr: bool = False,
+    force_ocr: bool = False,
+    ocr_lang: str = "pan+eng",
+    ocr_dpi: int = 200,
+    max_ocr_pages: int | None = 60,
+    progress_callback=None,
+) -> Tuple[List[Document], str, dict]:
+    """Save an uploaded Streamlit file, load it (with optional OCR). Returns (docs, source_name, info)."""
     suffix = os.path.splitext(uploaded_file.name)[1].lower() or ".pdf"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getbuffer())
         tmp_path = tmp.name
+    info = {"ocr_used": False, "reason": "text_file"}
     try:
         if suffix in {".txt", ".md"}:
             docs = load_text_file(tmp_path)
         else:
-            docs = load_pdf(tmp_path)
+            docs, info = load_pdf_with_optional_ocr(
+                tmp_path,
+                language=language,
+                use_ocr=use_ocr,
+                force_ocr=force_ocr,
+                ocr_lang=ocr_lang,
+                ocr_dpi=ocr_dpi,
+                max_ocr_pages=max_ocr_pages,
+                progress_callback=progress_callback,
+            )
     finally:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
-    return docs, uploaded_file.name
+    return docs, uploaded_file.name, info
 
 
 def split_documents(
