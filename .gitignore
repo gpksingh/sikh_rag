@@ -48,6 +48,12 @@ wheels/
 # Streamlit cache
 .streamlit/
 
+# Local font used only to regenerate the Punjabi sample PDF
+fonts/
+
+# Punjabi FAISS index is rebuilt on first Punjabi init (embedding model differs)
+faiss_index_punjabi_/
+
 # MacOS
 .DS_Store
 

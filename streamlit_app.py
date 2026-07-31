@@ -1,13 +1,11 @@
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import CharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_community.vectorstores import FAISS
 import os
-import tempfile
 import requests
 import time
-from urllib.parse import urljoin
+
+import rag as rag_helpers
 
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
@@ -64,7 +62,7 @@ def benchmark_ollama(base_url: str, timeout: int = 15) -> dict:
 
 
 # Page config
-st.set_page_config(page_title="Sikh RAG", layout="wide")
+st.set_page_config(page_title="Sikh & Punjabi RAG", layout="wide")
 
 # Custom CSS
 st.markdown("""
@@ -78,9 +76,27 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# Language must be chosen early so titles / prompts / indexes can follow it.
+with st.sidebar:
+    st.header("🌐 Language / ਭਾਸ਼ਾ")
+    language_label = st.radio(
+        "Answer language",
+        ["English", "ਪੰਜਾਬੀ (Punjabi)"],
+        index=1,
+        help="Punjabi mode indexes Gurmukhi books and answers in Gurmukhi.",
+    )
+language = "punjabi" if language_label.startswith("ਪੰਜਾਬੀ") else "english"
+
 # Title and description
-st.title("📚 Sikh Religious Texts RAG")
-st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
+if language == "punjabi":
+    st.title("📚 ਪੰਜਾਬੀ RAG — ਸਿੱਖ / ਪੰਜਾਬੀ ਪੁਸਤਕਾਂ")
+    st.markdown(
+        "ਪੰਜਾਬੀ (ਗੁਰਮੁਖੀ) ਕਿਤਾਬਾਂ ਤੋਂ grounded ਜਵਾਬ ਲਵੋ। "
+        "Upload your own Punjabi PDF/TXT or use the sample booklet."
+    )
+else:
+    st.title("📚 Sikh Religious Texts RAG")
+    st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
 
 # ── Top metrics banner ────────────────────────────────────────────────────────
 st.markdown("### 📈 Last Query Performance")
@@ -134,40 +150,57 @@ if "retriever" not in st.session_state:
     st.session_state.llm = None
     st.session_state.initialized = False
     st.session_state.last_perf = None
+    st.session_state.active_language = None
+
+# Switching language invalidates the in-memory pipeline (indexes are separate on disk).
+if st.session_state.get("active_language") not in (None, language):
+    st.session_state.retriever = None
+    st.session_state.vectorstore = None
+    st.session_state.llm = None
+    st.session_state.initialized = False
+    st.session_state.last_perf = None
+st.session_state.active_language = language
 
 # Sidebar for configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
-    
-    # PDF Source Selection
+
+    # PDF / text source selection
+    source_label = "Use Default Book" if language == "punjabi" else "Use Default PDF"
+    upload_label = "Upload Your Own Book" if language == "punjabi" else "Upload Your Own PDF"
     pdf_source = st.radio(
-        "📄 Select PDF Source",
-        ["Use Default PDF", "Upload Your Own PDF"],
+        "📄 Select Source",
+        [source_label, upload_label],
         index=0
     )
-    
-    if pdf_source == "Use Default PDF":
-        pdf_books = {
-            "a-brief-introduction-to-sikhism-gurbachan-singh-sidhu.pdf": "a-brief-introduction-to-sikhism-gurbachan-singh-sidhu.pdf",
-            "Sikh_Religion_Vol_1.pdf": "Sikh_Religion_Vol_1.pdf"
-        }
+
+    if pdf_source == source_label:
+        pdf_books = (
+            rag_helpers.PUNJABI_DEFAULT_BOOKS
+            if language == "punjabi"
+            else rag_helpers.ENGLISH_DEFAULT_BOOKS
+        )
         selected_book = st.selectbox(
             "📖 Select Book",
             list(pdf_books.keys()),
             index=0
         )
-        pdf_path = selected_book
+        pdf_path = pdf_books[selected_book]
         uploaded_file = None
     else:
-        st.info("📤 Upload a PDF file to analyze")
-        uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+        st.info("📤 Upload a PDF or TXT file (Gurmukhi Unicode text works best for Punjabi)")
+        uploaded_file = st.file_uploader(
+            "Choose a PDF or TXT file",
+            type=["pdf", "txt", "md"],
+        )
         if uploaded_file is not None:
             st.success(f"✅ File uploaded: {uploaded_file.name}")
         pdf_path = None
-    
-    chunk_size = st.slider("Chunk Size", 500, 2000, 1000, 100)
-    chunk_overlap = st.slider("Chunk Overlap", 0, 500, 30, 50)
-    
+
+    default_chunk = 800 if language == "punjabi" else 1000
+    chunk_size = st.slider("Chunk Size", 500, 2000, default_chunk, 100)
+    chunk_overlap = st.slider("Chunk Overlap", 0, 500, 80 if language == "punjabi" else 30, 10)
+
     # Dynamically fetch available LLM models from the connected Ollama host
     @st.cache_data(ttl=60, show_spinner=False)
     def get_available_models(host):
@@ -189,16 +222,28 @@ with st.sidebar:
         return ["gemma3:4b"]
 
     available_llm_models = get_available_models(OLLAMA_HOST)
+    if language == "punjabi":
+        available_llm_models = rag_helpers.prefer_models(
+            available_llm_models, rag_helpers.PUNJABI_PREFERRED_LLMS
+        )
+        st.caption("Punjabi tip: prefer `qwen2.5:3b` (or larger) for better Gurmukhi answers.")
     model_name = st.selectbox(
         "LLM Model",
         available_llm_models,
         index=0
     )
     st.caption(f"🔗 Models from `{OLLAMA_HOST}`")
-    
+
+    embed_choices = (
+        rag_helpers.PUNJABI_EMBEDDING_MODELS
+        if language == "punjabi"
+        else rag_helpers.ENGLISH_EMBEDDING_MODELS
+    )
     embedding_model = st.selectbox(
         "Embedding Model",
-        ["nomic-embed-text"]
+        embed_choices,
+        index=0,
+        help="Use bge-m3 for Punjabi/Gurmukhi retrieval (multilingual)."
     )
 
     st.markdown("---")
@@ -226,41 +271,51 @@ with st.sidebar:
 if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
     try:
         # Check if user uploaded a file or using default
-        if pdf_source == "Upload Your Own PDF" and uploaded_file is not None:
-            # Handle uploaded file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getbuffer())
-                tmp_path = tmp_file.name
-            
-            with st.spinner("Loading uploaded PDF..."):
-                loader = PyPDFLoader(tmp_path)
-                documents = loader.load()
-                st.success(f"✓ Loaded {len(documents)} pages from '{uploaded_file.name}'")
-            
-            # Clean up temp file
-            import atexit
-            atexit.register(lambda: os.unlink(tmp_path) if os.path.exists(tmp_path) else None)
-        
-        elif pdf_source == "Use Default PDF" and pdf_path:
-            # Handle default PDF path
-            with st.spinner("Loading PDF..."):
-                loader = PyPDFLoader(pdf_path)
-                documents = loader.load()
-                st.success(f"✓ Loaded {len(documents)} pages")
-        
+        if pdf_source == upload_label and uploaded_file is not None:
+            with st.spinner("Loading uploaded file..."):
+                documents, source_name = rag_helpers.load_uploaded_file(uploaded_file)
+                st.success(f"✓ Loaded {len(documents)} document unit(s) from '{source_name}'")
+            _source = source_name
+
+        elif pdf_source == source_label and pdf_path:
+            if not os.path.exists(pdf_path):
+                st.error(f"❌ Book not found at `{pdf_path}`")
+                st.stop()
+            with st.spinner("Loading book..."):
+                if pdf_path.lower().endswith((".txt", ".md")):
+                    documents = rag_helpers.load_text_file(pdf_path)
+                else:
+                    documents = rag_helpers.load_pdf(pdf_path)
+                st.success(f"✓ Loaded {len(documents)} pages/sections")
+            _source = pdf_path
+
         else:
-            st.error("❌ Please select a PDF source and upload a file or select a book!")
+            st.error("❌ Please select a book source and upload a file or select a book!")
             st.stop()
-        
+
+        stats = rag_helpers.documents_gurmukhi_stats(documents)
+        if language == "punjabi":
+            st.info(
+                f"🔤 Gurmukhi detection: **{stats['gurmukhi_chars']:,}** Gurmukhi chars "
+                f"({stats['ratio']:.0%} of letters)"
+            )
+            if stats["ratio"] < 0.05:
+                st.warning(
+                    "⚠️ Little or no Gurmukhi text was extracted. Scanned/image PDFs need OCR "
+                    "(or a Unicode text/PDF). Punjabi answers will be poor without extractable text."
+                )
+        elif stats["has_gurmukhi"]:
+            st.caption(f"Detected some Gurmukhi in the source ({stats['ratio']:.0%} of letters).")
+
         with st.spinner("Splitting documents..."):
-            text_splitter = CharacterTextSplitter(
+            docs = rag_helpers.split_documents(
+                documents,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
-                separator="\n"
+                language=language,
             )
-            docs = text_splitter.split_documents(documents=documents)
             st.success(f"✓ Created {len(docs)} chunks")
-        
+
         with st.spinner("Loading embedding model..."):
             embeddings = OllamaEmbeddings(
                 model=embedding_model,
@@ -269,11 +324,19 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
 
         # Build a fingerprint of current settings to decide if cached index is valid
         import hashlib, json as _json
-        _source = pdf_path if pdf_source == "Use Default PDF" else (uploaded_file.name if uploaded_file else "unknown")
         _fingerprint = hashlib.md5(
-            _json.dumps({"source": _source, "chunk_size": chunk_size, "chunk_overlap": chunk_overlap, "embedding": embedding_model}, sort_keys=True).encode()
+            _json.dumps(
+                {
+                    "source": _source,
+                    "chunk_size": chunk_size,
+                    "chunk_overlap": chunk_overlap,
+                    "embedding": embedding_model,
+                    "language": language,
+                },
+                sort_keys=True,
+            ).encode()
         ).hexdigest()[:8]
-        FAISS_PATH = "faiss_index_"
+        FAISS_PATH = rag_helpers.faiss_dir_for(language)
         FINGERPRINT_FILE = os.path.join(FAISS_PATH, "fingerprint.txt")
 
         # Check if the cached index matches current settings
@@ -290,7 +353,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 st.success(f"✓ Loaded cached vector store for `{_source}` (chunk={chunk_size}, overlap={chunk_overlap})")
         else:
             with st.spinner("Embedding model test..."):
-                test_embedding = embeddings.embed_query("test")
+                test_embedding = embeddings.embed_query("ਵਾਹਿਗੁਰੂ" if language == "punjabi" else "test")
                 st.success(f"✓ Embedding model works! Vector size: {len(test_embedding)}")
 
             with st.spinner("Creating vector store (embedding in batches)..."):
@@ -317,6 +380,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 progress.empty()
 
             with st.spinner("Saving vector store..."):
+                os.makedirs(FAISS_PATH, exist_ok=True)
                 vectorstore.save_local(FAISS_PATH)
                 # Save fingerprint so next run with same settings skips embedding
                 with open(FINGERPRINT_FILE, "w") as f:
@@ -335,10 +399,11 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 base_url=OLLAMA_HOST,
             )
             st.success(f"✓ LLM model ({model_name}) loaded")
-        
+
         st.session_state.initialized = True
-        st.success("✅ RAG Pipeline is ready!")
-        
+        st.session_state.rag_language = language
+        st.success("✅ RAG Pipeline is ready!" if language == "english" else "✅ RAG ਪਾਈਪਲਾਈਨ ਤਿਆਰ ਹੈ!")
+
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
 
@@ -384,21 +449,14 @@ def run_llm_streaming(llm, prompt_text: str) -> tuple:
     return full_response, ttft_ms, llm_e2e_ms, output_tokens
 
 
-def run_standard_rag(query: str, retriever, llm) -> tuple:
+def run_standard_rag(query: str, retriever, llm, language: str = "english") -> tuple:
     """Standard RAG. Returns (answer, docs, stats, perf) where perf = {ttft_ms, e2e_ms, input_tokens, output_tokens}."""
     t_retrieve = time.time()
     docs = retriever.invoke(query)
     retrieve_ms = round((time.time() - t_retrieve) * 1000)
 
     context = "\n\n".join([d.page_content for d in docs])
-    prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
+    prompt_text = rag_helpers.answer_prompt(language, context, query)
     answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
     stats = context_stats(docs, query)
     perf = {
@@ -410,44 +468,26 @@ Answer:"""
     }
     return answer, docs, stats, perf
 
-def score_chunk_relevance(llm, query: str, chunk: str) -> bool:
+def score_chunk_relevance(llm, query: str, chunk: str, language: str = "english") -> bool:
     """Ask the LLM whether a chunk is relevant to the query. Returns True/False."""
-    prompt = f"""You are a relevance filter. Answer ONLY with 'yes' or 'no'.
-
-Is the following passage relevant to answering this question?
-
-Question: {query}
-
-Passage:
-{chunk[:800]}
-
-Answer (yes/no):"""
+    prompt = rag_helpers.relevance_prompt(language, query, chunk)
     try:
         resp = llm.invoke(prompt).strip().lower()
-        return resp.startswith("yes")
+        return resp.startswith("yes") or resp.startswith("ਹਾਂ")
     except Exception:
         return True  # default to keeping the chunk on error
 
 
-def reformulate_query(llm, original_query: str, retrieved_chunks: list) -> str:
+def reformulate_query(llm, original_query: str, retrieved_chunks: list, language: str = "english") -> str:
     """Ask the LLM to reformulate the query given that retrieved chunks weren't relevant enough."""
-    context_sample = "\n---\n".join([c.page_content[:300] for c in retrieved_chunks[:3]])
-    prompt = f"""The following question was asked but the retrieved passages were not relevant enough.
-
-Original question: {original_query}
-
-Sample of what was retrieved:
-{context_sample}
-
-Please rewrite the question to be more specific and likely to retrieve better passages from a Sikh religious text.
-Return ONLY the rewritten question, nothing else."""
+    prompt = rag_helpers.reformulate_prompt(language, original_query, retrieved_chunks)
     try:
         return llm.invoke(prompt).strip()
     except Exception:
         return original_query
 
 
-def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
+def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, language: str = "english"):
     """
     ReFRAG pipeline. Returns (answer, final_docs, steps, stats, perf).
     """
@@ -465,7 +505,7 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
     relevant_docs = []
     irrelevant_docs = []
     for doc in initial_docs:
-        if score_chunk_relevance(llm, query, doc.page_content):
+        if score_chunk_relevance(llm, query, doc.page_content, language=language):
             relevant_docs.append(doc)
         else:
             irrelevant_docs.append(doc)
@@ -475,12 +515,14 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
     # Step 3: Reformulate if not enough relevant chunks
     reformulated_query = None
     if len(relevant_docs) < min_relevant:
-        reformulated_query = reformulate_query(llm, query, initial_docs)
+        reformulated_query = reformulate_query(llm, query, initial_docs, language=language)
         steps.append(("✏️ Query reformulation", f"New query: *{reformulated_query}*"))
         retriever2 = vectorstore.as_retriever(search_kwargs={"k": top_k})
         extra_docs = retriever2.invoke(reformulated_query)
         for doc in extra_docs:
-            if doc not in relevant_docs and score_chunk_relevance(llm, reformulated_query, doc.page_content):
+            if doc not in relevant_docs and score_chunk_relevance(
+                llm, reformulated_query, doc.page_content, language=language
+            ):
                 relevant_docs.append(doc)
         steps.append(("🔍 Re-retrieval",
                       f"After re-retrieval: {len(relevant_docs)} relevant chunks total"))
@@ -490,14 +532,7 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int):
     # Step 4: Generate answer with streaming metrics
     context = "\n\n".join([doc.page_content for doc in final_docs])
     effective_query = reformulated_query or query
-    prompt_text = f"""Based on the following context about Sikhism, answer the question accurately.
-
-Context:
-{context}
-
-Question: {effective_query}
-
-Answer:"""
+    prompt_text = rag_helpers.answer_prompt(language, context, effective_query)
     answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
     stats = context_stats(final_docs, effective_query)
     perf = {
@@ -553,16 +588,21 @@ def render_stats_card(stats: dict, label: str, color: str):
 
 if st.session_state.initialized:
     st.markdown("---")
-    st.subheader("🔍 Ask a Question")
+    active_lang = st.session_state.get("rag_language", language)
+    st.subheader("🔍 ਸਵਾਲ ਪੁੱਛੋ" if active_lang == "punjabi" else "🔍 Ask a Question")
 
     col1, col2 = st.columns([4, 1])
     with col1:
         query = st.text_input(
-            "Your question:",
-            placeholder="e.g., What is Sikhism? Who founded it?"
+            "ਤੁਹਾਡਾ ਸਵਾਲ:" if active_lang == "punjabi" else "Your question:",
+            placeholder=(
+                "ਉਦਾਹਰਨ: ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ? ਪੰਜ ਕਕਾਰ ਕੀ ਹਨ?"
+                if active_lang == "punjabi"
+                else "e.g., What is Sikhism? Who founded it?"
+            ),
         )
     with col2:
-        search_button = st.button("Search", type="primary")
+        search_button = st.button("ਖੋਜੋ" if active_lang == "punjabi" else "Search", type="primary")
 
     if search_button and query:
 
@@ -571,7 +611,7 @@ if st.session_state.initialized:
             with st.spinner("Running Standard RAG..."):
                 try:
                     rag_answer, rag_docs, rag_stats, rag_perf = run_standard_rag(
-                        query, st.session_state.retriever, st.session_state.llm
+                        query, st.session_state.retriever, st.session_state.llm, language=active_lang
                     )
                 except Exception as e:
                     st.error(f"❌ Standard RAG error: {e}")
@@ -585,6 +625,7 @@ if st.session_state.initialized:
                         st.session_state.llm,
                         top_k=refrag_top_k,
                         min_relevant=refrag_relevance_threshold,
+                        language=active_lang,
                     )
                 except Exception as e:
                     st.error(f"❌ ReFRAG error: {e}")
@@ -654,6 +695,7 @@ if st.session_state.initialized:
                         st.session_state.llm,
                         top_k=refrag_top_k,
                         min_relevant=refrag_relevance_threshold,
+                        language=active_lang,
                     )
                     st.session_state.last_perf = perf
                     st.session_state.last_mode = "ReFRAG"
@@ -674,16 +716,19 @@ if st.session_state.initialized:
 
         # ── Standard RAG only ─────────────────────────────────────────────────
         else:
-            with st.spinner("Searching and generating answer..."):
+            with st.spinner("ਖੋਜ ਅਤੇ ਜਵਾਬ ਤਿਆਰ ਹੋ ਰਿਹਾ ਹੈ..." if active_lang == "punjabi" else "Searching and generating answer..."):
                 try:
                     response, retrieved_docs, stats, perf = run_standard_rag(
-                        query, st.session_state.retriever, st.session_state.llm
+                        query,
+                        st.session_state.retriever,
+                        st.session_state.llm,
+                        language=active_lang,
                     )
                     st.session_state.last_perf = perf
                     st.session_state.last_mode = "Standard RAG"
                     render_perf_metrics(perf)
                     render_stats_card(stats, "Context Window Stats", "#111111")
-                    st.markdown("### Answer")
+                    st.markdown("### ਜਵਾਬ" if active_lang == "punjabi" else "### Answer")
                     st.write(response)
                     with st.expander("📖 Source Documents"):
                         for i, doc in enumerate(retrieved_docs, 1):
@@ -694,8 +739,13 @@ if st.session_state.initialized:
                     st.error(f"❌ Error: {str(e)}")
 
 else:
-    st.info("👈 Click 'Initialize RAG Pipeline' to get started!")
+    tip = (
+        "👈 ਖੱਬੇ ਪਾਸੇ 'Initialize RAG Pipeline' ਦਬਾਓ ਅਤੇ ਫਿਰ ਪੰਜਾਬੀ ਸਵਾਲ ਪੁੱਛੋ!"
+        if language == "punjabi"
+        else "👈 Click 'Initialize RAG Pipeline' to get started!"
+    )
+    st.info(tip)
 
 # Footer
 st.markdown("---")
-st.markdown("Made with ❤️ using LangChain, Ollama, and Streamlit")
+st.markdown("Made with ❤️ using LangChain, Ollama, and Streamlit · Punjabi RAG uses `bge-m3` + Gurmukhi prompts")

@@ -1,24 +1,21 @@
-# Gemini + Ollama RAG App
+# Sikh & Punjabi RAG App
 
-This app lets a user upload documents, converts the documents into text chunks,
-stores them in a vector database, retrieves relevant chunks, and sends them to
-Gemini or Ollama to answer questions.
+Ask grounded questions over Sikh / Punjabi books with LangChain, Ollama, FAISS, and Streamlit.
 
-## Tech Stack
+## Modes
+- **English** — default English Sikh PDFs in the repo root
+- **ਪੰਜਾਬੀ (Punjabi)** — Gurmukhi books, multilingual embeddings (`bge-m3`), answers in Punjabi
 
-- Python
-- LangChain
-- Gemini API
-- Ollama
-- FAISS vector database
-- PyPDF for PDF loading
+See [docs/punjabi_rag.md](docs/punjabi_rag.md) for Punjabi setup details.
 
-## Pipeline
+## Quick start
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+ollama serve   # separate terminal
+ollama pull bge-m3 && ollama pull qwen2.5:3b
+OLLAMA_HOST=http://localhost:11434 .venv/bin/streamlit run streamlit_app.py
+```
 
-1. Load documents
-2. Split documents into chunks
-3. Generate embeddings
-4. Store embeddings in FAISS
-5. Retrieve relevant chunks
-6. Send context to Gemini/Ollama
-7. Return grounded answer
+## Tech stack
+- Python, Streamlit, LangChain, Ollama, FAISS, PyPDF
