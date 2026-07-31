@@ -201,18 +201,29 @@ with st.sidebar:
     chunk_size = st.slider("Chunk Size", 500, 2000, default_chunk, 100)
     chunk_overlap = st.slider("Chunk Overlap", 0, 500, 80 if language == "punjabi" else 30, 10)
 
-    # Dynamically fetch available LLM models from the connected Ollama host
+    # Dynamically fetch available LLM / embedding models from the connected Ollama host
+    @st.cache_data(ttl=60, show_spinner=False)
+    def get_ollama_model_names(host):
+        try:
+            resp = requests.get(f"{host}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                return [m.get("name", "") for m in resp.json().get("models", []) if m.get("name")]
+        except Exception:
+            pass
+        return []
+
     @st.cache_data(ttl=60, show_spinner=False)
     def get_available_models(host):
         try:
             resp = requests.get(f"{host}/api/tags", timeout=5)
             if resp.status_code == 200:
                 all_models = resp.json().get("models", [])
-                # Exclude embedding models, sort by size ascending (fastest first on CPU)
-                llm_models = [m for m in all_models if "embed" not in m["name"].lower()]
+                llm_models = [
+                    m for m in all_models
+                    if not rag_helpers.is_embedding_model_name(m.get("name", ""))
+                ]
                 llm_models.sort(key=lambda m: m.get("size", 0))
                 names = [m["name"] for m in llm_models]
-                # Prefer gemma4:e2b first if available (fastest on Apple Silicon)
                 if "gemma4:e2b" in names:
                     names.remove("gemma4:e2b")
                     names.insert(0, "gemma4:e2b")
@@ -234,17 +245,35 @@ with st.sidebar:
     )
     st.caption(f"🔗 Models from `{OLLAMA_HOST}`")
 
-    embed_choices = (
+    preferred_embeds = (
         rag_helpers.PUNJABI_EMBEDDING_MODELS
         if language == "punjabi"
         else rag_helpers.ENGLISH_EMBEDDING_MODELS
+    )
+    host_model_names = get_ollama_model_names(OLLAMA_HOST)
+    embed_choices, missing_embeds = rag_helpers.resolve_embedding_choices(
+        preferred_embeds, host_model_names
     )
     embedding_model = st.selectbox(
         "Embedding Model",
         embed_choices,
         index=0,
-        help="Use bge-m3 for Punjabi/Gurmukhi retrieval (multilingual)."
+        help="Prefer bge-m3 for Punjabi/Gurmukhi when installed on the Ollama host. "
+             "If missing, the app falls back to whatever embedding model is available (often nomic-embed-text).",
     )
+    if missing_embeds and language == "punjabi" and "bge-m3" in missing_embeds:
+        st.warning(
+            "⚠️ `bge-m3` is not installed on this Ollama host, so Punjabi retrieval "
+            f"will use `{embedding_model}` instead. For better Gurmukhi retrieval, run "
+            "`ollama pull bge-m3` on the Ollama server (e.g. your Railway instance)."
+        )
+    elif host_model_names and embedding_model.split(":")[0] not in {
+        rag_helpers.normalize_model_base(n) for n in host_model_names
+    }:
+        st.error(
+            f"❌ Embedding model `{embedding_model}` is not on `{OLLAMA_HOST}`. "
+            f"Pull it there (`ollama pull {embedding_model}`) or pick another model."
+        )
 
     if language == "punjabi":
         punjabi_answer_style = st.radio(
@@ -447,7 +476,16 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
         st.success("✅ RAG Pipeline is ready!" if language == "english" else "✅ RAG ਪਾਈਪਲਾਈਨ ਤਿਆਰ ਹੈ!")
 
     except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
+        err = str(e)
+        if "not found" in err.lower() or "404" in err:
+            st.error(
+                f"❌ Error: {err}\n\n"
+                f"Pull the model on your Ollama host (`{OLLAMA_HOST}`), e.g.:\n"
+                f"`ollama pull {embedding_model}` or `ollama pull nomic-embed-text`\n"
+                "Then refresh this page and pick an embedding model that appears in the sidebar list."
+            )
+        else:
+            st.error(f"❌ Error: {err}")
 
 # ── ReFRAG helpers ────────────────────────────────────────────────────────────
 

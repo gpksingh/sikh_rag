@@ -24,6 +24,60 @@ PUNJABI_PREFERRED_LLMS = [
 PUNJABI_EMBEDDING_MODELS = ["bge-m3", "nomic-embed-text"]
 ENGLISH_EMBEDDING_MODELS = ["nomic-embed-text", "bge-m3"]
 
+# Substrings that mark embedding-capable Ollama tags (exclude from LLM list).
+EMBEDDING_NAME_HINTS = ("embed", "bge-", "e5-", "minilm", "mxbai-embed")
+
+
+def is_embedding_model_name(name: str) -> bool:
+    lower = (name or "").lower()
+    return any(h in lower for h in EMBEDDING_NAME_HINTS)
+
+
+def normalize_model_base(name: str) -> str:
+    """Strip :tag so 'bge-m3:latest' matches preferred 'bge-m3'."""
+    return (name or "").split(":", 1)[0].strip().lower()
+
+
+def resolve_embedding_choices(
+    preferred: List[str],
+    available_names: List[str],
+) -> Tuple[List[str], List[str]]:
+    """
+    Return (choices_for_ui, missing_preferred).
+
+    Prefers models that are actually present on the Ollama host. If none of the
+    preferred models are installed, falls back to any detected embedding model,
+    then finally to the preferred list (so the UI still shows options).
+    """
+    available = list(available_names or [])
+    by_base = {}
+    for n in available:
+        by_base.setdefault(normalize_model_base(n), n)
+
+    chosen = []
+    missing = []
+    for pref in preferred:
+        base = normalize_model_base(pref)
+        if base in by_base:
+            chosen.append(by_base[base])
+        elif pref in available:
+            chosen.append(pref)
+        else:
+            missing.append(pref)
+
+    if chosen:
+        # Keep any other installed embedding models after preferred ones.
+        for n in available:
+            if is_embedding_model_name(n) and n not in chosen:
+                chosen.append(n)
+        return chosen, missing
+
+    installed_embeds = [n for n in available if is_embedding_model_name(n)]
+    if installed_embeds:
+        return installed_embeds, missing
+
+    return list(preferred), missing
+
 PUNJABI_DEFAULT_BOOKS = {
     "ਸਿੱਖ ਧਰਮ: ਜਾਣ-ਪਛਾਣ (Punjabi sample)": "punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf",
 }
