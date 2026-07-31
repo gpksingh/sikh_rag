@@ -92,7 +92,8 @@ if language == "punjabi":
     st.title("📚 ਪੰਜਾਬੀ RAG — ਸਿੱਖ / ਪੰਜਾਬੀ ਪੁਸਤਕਾਂ")
     st.markdown(
         "ਪੰਜਾਬੀ (ਗੁਰਮੁਖੀ) ਕਿਤਾਬਾਂ ਤੋਂ grounded ਜਵਾਬ ਲਵੋ। "
-        "Upload your own Punjabi PDF/TXT or use the sample booklet."
+        "Upload a Punjabi PDF, or use the sample booklet. "
+        "Optional **Punjabi English** shows the same Punjabi in English letters (not a translation)."
     )
 else:
     st.title("📚 Sikh Religious Texts RAG")
@@ -166,12 +167,13 @@ with st.sidebar:
     st.header("⚙️ Configuration")
 
     # PDF / text source selection
-    source_label = "Use Default Book" if language == "punjabi" else "Use Default PDF"
-    upload_label = "Upload Your Own Book" if language == "punjabi" else "Upload Your Own PDF"
+    source_label = "Use Default Punjabi Book" if language == "punjabi" else "Use Default PDF"
+    upload_label = "Upload Punjabi PDF" if language == "punjabi" else "Upload Your Own PDF"
     pdf_source = st.radio(
         "📄 Select Source",
         [source_label, upload_label],
-        index=0
+        index=0,
+        help="Upload your own Punjabi (Gurmukhi) PDF or TXT to build a grounded index.",
     )
 
     if pdf_source == source_label:
@@ -188,11 +190,23 @@ with st.sidebar:
         pdf_path = pdf_books[selected_book]
         uploaded_file = None
     else:
-        st.info("📤 Upload a PDF or TXT file (Gurmukhi Unicode text works best for Punjabi)")
-        uploaded_file = st.file_uploader(
-            "Choose a PDF or TXT file",
-            type=["pdf", "txt", "md"],
-        )
+        if language == "punjabi":
+            st.info(
+                "📤 Upload a **Punjabi PDF** (or TXT/MD) with extractable Gurmukhi text. "
+                "Scanned image-only PDFs will not work without OCR."
+            )
+            uploaded_file = st.file_uploader(
+                "Choose a Punjabi PDF or TXT file",
+                type=["pdf", "txt", "md"],
+                key="punjabi_book_uploader",
+            )
+        else:
+            st.info("📤 Upload a PDF file to analyze")
+            uploaded_file = st.file_uploader(
+                "Choose a PDF or TXT file",
+                type=["pdf", "txt", "md"],
+                key="english_book_uploader",
+            )
         if uploaded_file is not None:
             st.success(f"✅ File uploaded: {uploaded_file.name}")
         pdf_path = None
@@ -283,31 +297,31 @@ with st.sidebar:
             help="Grounded quote returns the best retrieved Gurmukhi passage (fast & faithful). "
                  "LLM paraphrase needs a stronger model (qwen2.5:3b+) and may fall back to a quote.",
         )
-        show_transliteration = st.checkbox(
-            "Show English transliteration",
+        show_punjabi_english = st.checkbox(
+            "Show Punjabi English (Roman)",
             value=True,
-            help="Also show a Roman/English reading of Gurmukhi answers and sources.",
+            help="Punjabi language written with English letters (e.g. 'guru nanak'), not an English translation.",
         )
-        if show_transliteration:
+        if show_punjabi_english:
             transliteration_style = st.selectbox(
-                "Transliteration style",
-                ["Simple English (ASCII)", "Scholarly (IAST)"],
+                "Punjabi English style",
+                ["Simple (ASCII)", "Scholarly (IAST)"],
                 index=0,
-                help="Simple strips diacritics (guru nanak). IAST keeps ā ī ṃ etc.",
+                help="Simple: guru nanak. IAST keeps diacritics: gurū nānaka.",
             )
             transliteration_display = st.radio(
-                "Transliteration display",
-                ["Gurmukhi + English", "English only", "Gurmukhi only"],
+                "Script display",
+                ["Gurmukhi + Punjabi English", "Punjabi English only", "Gurmukhi only"],
                 index=0,
-                help="Choose whether to show Gurmukhi, Roman transliteration, or both.",
+                help="Gurmukhi is ਪੰਜਾਬੀ script. Punjabi English is the same Punjabi words in Latin letters.",
             )
         else:
-            transliteration_style = "Simple English (ASCII)"
+            transliteration_style = "Simple (ASCII)"
             transliteration_display = "Gurmukhi only"
     else:
         punjabi_answer_style = "LLM paraphrase"
-        show_transliteration = False
-        transliteration_style = "Simple English (ASCII)"
+        show_punjabi_english = False
+        transliteration_style = "Simple (ASCII)"
         transliteration_display = "Gurmukhi only"
 
     st.markdown("---")
@@ -703,29 +717,29 @@ def render_perf_metrics(perf: dict):
 
 
 def _translit_scheme() -> str:
-    return "iast" if transliteration_style.startswith("Scholarly") else "simple"
+    return "iast" if "IAST" in transliteration_style else "simple"
 
 
 def render_punjabi_text(text: str, *, preview_chars: int | None = None):
-    """Render Gurmukhi text with optional English transliteration."""
+    """Render Gurmukhi text with optional Punjabi English (Roman) reading."""
     body = text if preview_chars is None else (text[:preview_chars] + ("..." if len(text) > preview_chars else ""))
-    show_gurmukhi = transliteration_display != "English only"
-    show_roman = show_transliteration and transliteration_display != "Gurmukhi only"
+    show_gurmukhi = transliteration_display != "Punjabi English only"
+    show_roman = show_punjabi_english and transliteration_display != "Gurmukhi only"
 
     if show_gurmukhi:
         st.write(body)
     if show_roman:
         try:
-            roman = rag_helpers.gurmukhi_to_english_transliteration(body, style=_translit_scheme())
+            roman = rag_helpers.gurmukhi_to_punjabi_english(body, style=_translit_scheme())
         except Exception as e:
-            st.caption(f"Transliteration unavailable: {e}")
+            st.caption(f"Punjabi English unavailable: {e}")
             if not show_gurmukhi:
                 st.write(body)
             return
-        if transliteration_display == "English only":
+        if transliteration_display == "Punjabi English only":
             st.write(roman)
         else:
-            st.caption("English transliteration")
+            st.caption("Punjabi English (Roman)")
             st.markdown(f"*{roman}*")
 
 

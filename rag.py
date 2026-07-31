@@ -284,11 +284,18 @@ def faiss_dir_for(language: str) -> str:
 
 
 def gurmukhi_to_english_transliteration(text: str, *, style: str = "simple") -> str:
+    """Deprecated alias — use gurmukhi_to_punjabi_english()."""
+    return gurmukhi_to_punjabi_english(text, style=style)
+
+
+def gurmukhi_to_punjabi_english(text: str, *, style: str = "simple") -> str:
     """
-    Transliterate Gurmukhi text to Roman/English letters.
+    Convert Gurmukhi Punjabi to Punjabi English (Roman Punjabi):
+    the same Punjabi words written with English/Latin letters
+    (e.g. 'guru nanak'), NOT a translation into English meaning.
 
     style:
-      - "simple": ASCII-friendly (no diacritics) for general English readers
+      - "simple": ASCII-friendly (no diacritics) — everyday Punjabi English
       - "iast": scholarly IAST with diacritics (ā, ī, ṃ, …)
     Non-Gurmukhi characters are preserved.
     """
@@ -299,7 +306,7 @@ def gurmukhi_to_english_transliteration(text: str, *, style: str = "simple") -> 
         from indic_transliteration.sanscript import transliterate
     except ImportError as e:
         raise RuntimeError(
-            "indic-transliteration is required for English transliteration. "
+            "indic-transliteration is required for Punjabi English. "
             "Install with: pip install indic-transliteration"
         ) from e
 

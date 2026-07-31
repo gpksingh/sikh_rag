@@ -13,8 +13,10 @@ CLI variant with a hardcoded macOS PDF path — use `streamlit_app.py` as the en
   defaults to multilingual embeddings **`bge-m3`**, prefers **`qwen2.5:1.5b`** in the model list, and uses
   Gurmukhi prompts. Default answer style is **Grounded quote** (returns the top retrieved passage —
   fast and faithful on CPU). **LLM paraphrase** is optional and falls back to a quote when generation
-  is weak. Optional **Show English transliteration** renders Roman/ASCII (or IAST) under answers and
-  sources. Sample booklet: `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.
+  is weak. Optional **Show Punjabi English (Roman)** shows the same Punjabi words in Latin
+  letters (e.g. `guru nanak`) — not an English translation. Use **Upload Punjabi PDF** in the
+  sidebar to index your own Gurmukhi books. Sample booklet:
+  `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.
 
 ### Environment (already provisioned in the VM snapshot)
 - Python deps are installed into a virtualenv at `.venv/` (the startup update script keeps it in sync
