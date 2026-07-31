@@ -32,7 +32,6 @@ embedding model (usually `nomic-embed-text`) and shows a sidebar warning.
 OLLAMA_HOST=http://localhost:11434 .venv/bin/streamlit run streamlit_app.py
 ```
 Pick **ਪੰਜਾਬੀ (Gurmukhi)** or **Punjabi English (Roman)**, keep **Grounded quote**, initialize,
-then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿ� keep **Grounded quote**, initialize,
 then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪਿਤ ਕੀਤਾ?`
 
 **Answer styles**
