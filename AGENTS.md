@@ -7,17 +7,13 @@ questions about Sikhism / Punjabi books from PDF/TXT texts, using **Ollama** for
 generation and local **FAISS** vector stores. Shared helpers are in `rag.py`. `app.py` is a legacy
 CLI variant with a hardcoded macOS PDF path — use `streamlit_app.py` as the entrypoint.
 
-### Language modes
-- **English** (default books under repo root): uses `faiss_index_/` + `nomic-embed-text` by default.
-- **ਪੰਜਾਬੀ (Punjabi)**: sidebar language toggle; indexes Gurmukhi books into `faiss_index_punjabi_/`,
-  defaults to multilingual embeddings **`bge-m3`**, prefers **`qwen2.5:1.5b`** in the model list, and uses
-  Gurmukhi prompts. Default answer style is **Grounded quote** (returns the top retrieved passage —
-  fast and faithful on CPU). **LLM paraphrase** is optional and falls back to a quote when generation
-  is weak. Optional **Show Punjabi English (Roman)** shows the same Punjabi words in Latin
-  letters (e.g. `guru nanak`) — not an English translation. Use **Upload Punjabi PDF** in the
-  sidebar to index your own Gurmukhi books. Scanned books: enable **OCR scanned Punjabi PDFs**
-  (Tesseract `pan`; needs `packages.txt` on Streamlit Cloud). Sample booklet:
-  `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.
+### Answer script modes (Punjabi only)
+- Sidebar has exactly two options: **ਪੰਜਾਬੀ (Gurmukhi)** and **Punjabi English (Roman)**.
+- Both use Punjabi books / OCR / `faiss_index_punjabi_/` — Roman only changes answer display
+  (Punjabi in English letters, not a translation).
+- Defaults: multilingual embeddings **`bge-m3`** (falls back if missing), grounded-quote answers,
+  optional OCR for scanned PDFs (`packages.txt` on Streamlit Cloud).
+- Sample booklet: `punjabi_books/sikh_dharam_jaan_pehchaan_punjabi.pdf`. See `docs/punjabi_rag.md`.
 
 ### Environment (already provisioned in the VM snapshot)
 - Python deps are installed into a virtualenv at `.venv/` (the startup update script keeps it in sync

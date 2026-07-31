@@ -69,14 +69,16 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# Language must be chosen early so titles / prompts / indexes can follow it.
+# Answer script: Punjabi Gurmukhi vs Punjabi English (Roman). RAG is always Punjabi.
 with st.sidebar:
-    st.header("🌐 Language / ਭਾਸ਼ਾ")
-    language_label = st.radio(
-        "Answer language",
-        ["English", "ਪੰਜਾਬੀ (Punjabi)"],
-        index=1,
-        help="Punjabi mode indexes Gurmukhi books and answers in Gurmukhi.",
+    st.header("🌐 Script / ਲਿਪੀ")
+    script_label = st.radio(
+        "Answer script",
+        ["ਪੰਜਾਬੀ (Gurmukhi)", "Punjabi English (Roman)"],
+        index=0,
+        help="Both use Punjabi books. "
+             "Gurmukhi = ਪੰਜਾਬੀ script. "
+             "Punjabi English = same Punjabi words in English letters (not a translation).",
     )
     # API key status (after set_page_config)
     if OLLAMA_API_KEY:
@@ -84,19 +86,26 @@ with st.sidebar:
         st.caption(f"🔑 API Key loaded: `{masked}`")
     else:
         st.caption("ℹ️ No OLLAMA_API_KEY in secrets (OK if your Ollama host is open).")
-language = "punjabi" if language_label.startswith("ਪੰਜਾਬੀ") else "english"
+
+answer_script = "roman" if "Roman" in script_label else "gurmukhi"
+language = "punjabi"  # indexing / OCR / prompts always Punjabi
+show_punjabi_english = answer_script == "roman"
+transliteration_display = "Punjabi English only" if answer_script == "roman" else "Gurmukhi only"
+transliteration_style = "Simple (ASCII)"
 
 # Title and description
-if language == "punjabi":
-    st.title("📚 ਪੰਜਾਬੀ RAG — ਸਿੱਖ / ਪੰਜਾਬੀ ਪੁਸਤਕਾਂ")
+st.title("📚 ਪੰਜਾਬੀ RAG — ਸਿੱਖ / ਪੰਜਾਬੀ ਪੁਸਤਕਾਂ")
+if answer_script == "roman":
     st.markdown(
-        "ਪੰਜਾਬੀ (ਗੁਰਮੁਖੀ) ਕਿਤਾਬਾਂ ਤੋਂ grounded ਜਵਾਬ ਲਵੋ। "
-        "Upload a Punjabi PDF, or use the sample booklet. "
-        "Optional **Punjabi English** shows the same Punjabi in English letters (not a translation)."
+        "Grounded answers from Punjabi books, shown in **Punjabi English** "
+        "(Punjabi written with English letters, e.g. `guru nanak` — not an English translation). "
+        "Upload a Punjabi PDF or use the sample booklet."
     )
 else:
-    st.title("📚 Sikh Religious Texts RAG")
-    st.markdown("Ask questions about Sikhism and get answers based on the sacred texts")
+    st.markdown(
+        "ਪੰਜਾਬੀ (ਗੁਰਮੁਖੀ) ਕਿਤਾਬਾਂ ਤੋਂ grounded ਜਵਾਬ ਲਵੋ। "
+        "Upload a Punjabi PDF, or use the sample booklet."
+    )
 
 # ── Top metrics banner ────────────────────────────────────────────────────────
 st.markdown("### 📈 Last Query Performance")
@@ -150,24 +159,17 @@ if "retriever" not in st.session_state:
     st.session_state.llm = None
     st.session_state.initialized = False
     st.session_state.last_perf = None
-    st.session_state.active_language = None
 
-# Switching language invalidates the in-memory pipeline (indexes are separate on disk).
-if st.session_state.get("active_language") not in (None, language):
-    st.session_state.retriever = None
-    st.session_state.vectorstore = None
-    st.session_state.llm = None
-    st.session_state.initialized = False
-    st.session_state.last_perf = None
 st.session_state.active_language = language
+st.session_state.answer_script = answer_script
 
 # Sidebar for configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
 
-    # PDF / text source selection
-    source_label = "Use Default Punjabi Book" if language == "punjabi" else "Use Default PDF"
-    upload_label = "Upload Punjabi PDF" if language == "punjabi" else "Upload Your Own PDF"
+    # PDF / text source selection (Punjabi books only)
+    source_label = "Use Default Punjabi Book"
+    upload_label = "Upload Punjabi PDF"
     pdf_source = st.radio(
         "📄 Select Source",
         [source_label, upload_label],
@@ -176,11 +178,7 @@ with st.sidebar:
     )
 
     if pdf_source == source_label:
-        pdf_books = (
-            rag_helpers.PUNJABI_DEFAULT_BOOKS
-            if language == "punjabi"
-            else rag_helpers.ENGLISH_DEFAULT_BOOKS
-        )
+        pdf_books = rag_helpers.PUNJABI_DEFAULT_BOOKS
         selected_book = st.selectbox(
             "📖 Select Book",
             list(pdf_books.keys()),
@@ -189,30 +187,21 @@ with st.sidebar:
         pdf_path = pdf_books[selected_book]
         uploaded_file = None
     else:
-        if language == "punjabi":
-            st.info(
-                "📤 Upload a **Punjabi PDF** (or TXT/MD) with extractable Gurmukhi text. "
-                "Scanned image-only PDFs will not work without OCR."
-            )
-            uploaded_file = st.file_uploader(
-                "Choose a Punjabi PDF or TXT file",
-                type=["pdf", "txt", "md"],
-                key="punjabi_book_uploader",
-            )
-        else:
-            st.info("📤 Upload a PDF file to analyze")
-            uploaded_file = st.file_uploader(
-                "Choose a PDF or TXT file",
-                type=["pdf", "txt", "md"],
-                key="english_book_uploader",
-            )
+        st.info(
+            "📤 Upload a **Punjabi PDF** (or TXT/MD) with extractable Gurmukhi text, "
+            "or a scanned book (OCR can read Gurmukhi pages)."
+        )
+        uploaded_file = st.file_uploader(
+            "Choose a Punjabi PDF or TXT file",
+            type=["pdf", "txt", "md"],
+            key="punjabi_book_uploader",
+        )
         if uploaded_file is not None:
             st.success(f"✅ File uploaded: {uploaded_file.name}")
         pdf_path = None
 
-    default_chunk = 800 if language == "punjabi" else 1000
-    chunk_size = st.slider("Chunk Size", 500, 2000, default_chunk, 100)
-    chunk_overlap = st.slider("Chunk Overlap", 0, 500, 80 if language == "punjabi" else 30, 10)
+    chunk_size = st.slider("Chunk Size", 500, 2000, 800, 100)
+    chunk_overlap = st.slider("Chunk Overlap", 0, 500, 80, 10)
 
     # Dynamically fetch available LLM / embedding models from the connected Ollama host
     @st.cache_data(ttl=60, show_spinner=False)
@@ -245,12 +234,10 @@ with st.sidebar:
             pass
         return ["gemma3:4b"]
 
-    available_llm_models = get_available_models(OLLAMA_HOST)
-    if language == "punjabi":
-        available_llm_models = rag_helpers.prefer_models(
-            available_llm_models, rag_helpers.PUNJABI_PREFERRED_LLMS
-        )
-        st.caption("Punjabi tip: prefer `qwen2.5:1.5b` or `qwen2.5:3b` for Gurmukhi answers.")
+    available_llm_models = rag_helpers.prefer_models(
+        get_available_models(OLLAMA_HOST), rag_helpers.PUNJABI_PREFERRED_LLMS
+    )
+    st.caption("Tip: prefer `qwen2.5:1.5b` or `qwen2.5:3b` for Gurmukhi answers.")
     model_name = st.selectbox(
         "LLM Model",
         available_llm_models,
@@ -258,11 +245,7 @@ with st.sidebar:
     )
     st.caption(f"🔗 Models from `{OLLAMA_HOST}`")
 
-    preferred_embeds = (
-        rag_helpers.PUNJABI_EMBEDDING_MODELS
-        if language == "punjabi"
-        else rag_helpers.ENGLISH_EMBEDDING_MODELS
-    )
+    preferred_embeds = rag_helpers.PUNJABI_EMBEDDING_MODELS
     host_model_names = get_ollama_model_names(OLLAMA_HOST)
     embed_choices, missing_embeds = rag_helpers.resolve_embedding_choices(
         preferred_embeds, host_model_names
@@ -274,7 +257,7 @@ with st.sidebar:
         help="Prefer bge-m3 for Punjabi/Gurmukhi when installed on the Ollama host. "
              "If missing, the app falls back to whatever embedding model is available (often nomic-embed-text).",
     )
-    if missing_embeds and language == "punjabi" and "bge-m3" in missing_embeds:
+    if missing_embeds and "bge-m3" in missing_embeds:
         st.warning(
             "⚠️ `bge-m3` is not installed on this Ollama host, so Punjabi retrieval "
             f"will use `{embedding_model}` instead. For better Gurmukhi retrieval, run "
@@ -288,80 +271,49 @@ with st.sidebar:
             f"Pull it there (`ollama pull {embedding_model}`) or pick another model."
         )
 
-    if language == "punjabi":
-        punjabi_answer_style = st.radio(
-            "Punjabi answer style",
-            ["Grounded quote (recommended)", "LLM paraphrase"],
-            index=0,
-            help="Grounded quote returns the best retrieved Gurmukhi passage (fast & faithful). "
-                 "LLM paraphrase needs a stronger model (qwen2.5:3b+) and may fall back to a quote.",
-        )
-        show_punjabi_english = st.checkbox(
-            "Show Punjabi English (Roman)",
-            value=True,
-            help="Punjabi language written with English letters (e.g. 'guru nanak'), not an English translation.",
-        )
-        if show_punjabi_english:
-            transliteration_style = st.selectbox(
-                "Punjabi English style",
-                ["Simple (ASCII)", "Scholarly (IAST)"],
-                index=0,
-                help="Simple: guru nanak. IAST keeps diacritics: gurū nānaka.",
-            )
-            transliteration_display = st.radio(
-                "Script display",
-                ["Gurmukhi + Punjabi English", "Punjabi English only", "Gurmukhi only"],
-                index=0,
-                help="Gurmukhi is ਪੰਜਾਬੀ script. Punjabi English is the same Punjabi words in Latin letters.",
-            )
-        else:
-            transliteration_style = "Simple (ASCII)"
-            transliteration_display = "Gurmukhi only"
+    punjabi_answer_style = st.radio(
+        "Punjabi answer style",
+        ["Grounded quote (recommended)", "LLM paraphrase"],
+        index=0,
+        help="Grounded quote returns the best retrieved Gurmukhi passage (fast & faithful). "
+             "LLM paraphrase needs a stronger model (qwen2.5:3b+) and may fall back to a quote.",
+    )
 
-        st.markdown("---")
-        st.subheader("🖨️ OCR (scanned books)")
-        ocr_ok, ocr_detail = rag_helpers.ocr_available()
-        enable_ocr = st.checkbox(
-            "OCR scanned Punjabi PDFs (Gurmukhi)",
-            value=True,
-            help="If the PDF has no selectable text, run Tesseract OCR with Punjabi (pan) to read Gurmukhi pages.",
+    st.markdown("---")
+    st.subheader("🖨️ OCR (scanned books)")
+    ocr_ok, ocr_detail = rag_helpers.ocr_available()
+    enable_ocr = st.checkbox(
+        "OCR scanned Punjabi PDFs (Gurmukhi)",
+        value=True,
+        help="If the PDF has no selectable text, run Tesseract OCR with Punjabi (pan) to read Gurmukhi pages.",
+    )
+    force_ocr = st.checkbox(
+        "Always OCR (ignore text layer)",
+        value=False,
+        help="Force OCR even when the PDF already has a text layer.",
+    )
+    max_ocr_pages = st.slider(
+        "Max OCR pages",
+        1,
+        200,
+        40,
+        1,
+        help="Limit pages for OCR to control time/memory (Streamlit Cloud is limited).",
+    )
+    ocr_dpi = st.select_slider(
+        "OCR DPI",
+        options=[150, 200, 250, 300],
+        value=200,
+        help="Higher DPI is more accurate but slower and uses more memory.",
+    )
+    if not ocr_ok:
+        st.warning(
+            f"⚠️ OCR system packages not available here ({ocr_detail}). "
+            "On Streamlit Cloud, ensure `packages.txt` includes tesseract-ocr, "
+            "tesseract-ocr-pan, and poppler-utils."
         )
-        force_ocr = st.checkbox(
-            "Always OCR (ignore text layer)",
-            value=False,
-            help="Force OCR even when the PDF already has a text layer.",
-        )
-        max_ocr_pages = st.slider(
-            "Max OCR pages",
-            1,
-            200,
-            40,
-            1,
-            help="Limit pages for OCR to control time/memory (Streamlit Cloud is limited).",
-        )
-        ocr_dpi = st.select_slider(
-            "OCR DPI",
-            options=[150, 200, 250, 300],
-            value=200,
-            help="Higher DPI is more accurate but slower and uses more memory.",
-        )
-        if not ocr_ok:
-            st.warning(
-                f"⚠️ OCR system packages not available here ({ocr_detail}). "
-                "On Streamlit Cloud, ensure `packages.txt` includes tesseract-ocr, "
-                "tesseract-ocr-pan, and poppler-utils."
-            )
-        else:
-            st.caption(f"OCR ready · Tesseract lang `{rag_helpers.resolve_ocr_lang('pan+eng')}`")
     else:
-        punjabi_answer_style = "LLM paraphrase"
-        show_punjabi_english = False
-        transliteration_style = "Simple (ASCII)"
-        transliteration_display = "Gurmukhi only"
-        enable_ocr = False
-        force_ocr = False
-        max_ocr_pages = 40
-        ocr_dpi = 200
+        st.caption(f"OCR ready · Tesseract lang `{rag_helpers.resolve_ocr_lang('pan+eng')}`")
 
     st.markdown("---")
     st.header("🔬 RAG Mode")
@@ -586,7 +538,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
 
         st.session_state.initialized = True
         st.session_state.rag_language = language
-        st.success("✅ RAG Pipeline is ready!" if language == "english" else "✅ RAG ਪਾਈਪਲਾਈਨ ਤਿਆਰ ਹੈ!")
+        st.success("✅ RAG ਪਾਈਪਲਾਈਨ ਤਿਆਰ ਹੈ!")
 
     except Exception as e:
         err = str(e)

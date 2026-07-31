@@ -32,12 +32,9 @@ initialize, then ask e.g. `ਸਿੱਖ ਧਰਮ ਕਿਸ ਨੇ ਸਥਾਪ�
 - **Grounded quote (recommended):** returns the best retrieved Gurmukhi passage (~1s). Best for faithfulness on CPU.
 - **LLM paraphrase:** asks the local model to rewrite; falls back to a quote if output is empty/looping/weakly grounded. Small models struggle with Gurmukhi generation — prefer `qwen2.5:3b+` if you use this mode.
 
-**Punjabi English (Roman) — optional**
-- Enable **Show Punjabi English (Roman)** in the Punjabi sidebar.
-- This is **Punjabi written with English letters** (e.g. `guru nanak`), **not** an English translation.
-- Display modes: **Gurmukhi + Punjabi English**, **Punjabi English only**, or **Gurmukhi only**.
-- Styles: **Simple (ASCII)** (default) or **Scholarly (IAST)** with diacritics.
-- Uses the `indic-transliteration` package (Gurmukhi → Roman).
+**Answer script (only two options)**
+- **ਪੰਜਾਬੀ (Gurmukhi):** answers in Gurmukhi script.
+- **Punjabi English (Roman):** same Punjabi answer in English letters (e.g. `guru nanak`) — not a translation.
 
 **Upload a Punjabi PDF**
 - In ਪੰਜਾਬੀ mode, choose **Upload Punjabi PDF**, then pick a PDF/TXT.

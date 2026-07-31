@@ -3,10 +3,12 @@
 Ask grounded questions over Sikh / Punjabi books with LangChain, Ollama, FAISS, and Streamlit.
 
 ## Modes
-- **English** — default English Sikh PDFs in the repo root
-- **ਪੰਜਾਬੀ (Punjabi)** — Gurmukhi books, multilingual embeddings (`bge-m3`), answers in Punjabi
+- **ਪੰਜਾਬੀ (Gurmukhi)** — answers in Gurmukhi script
+- **Punjabi English (Roman)** — same Punjabi answers written with English letters (not a translation)
 
-See [docs/punjabi_rag.md](docs/punjabi_rag.md) for Punjabi setup details.
+Both modes use Punjabi books, multilingual embeddings (`bge-m3` when available), and optional OCR for scanned PDFs.
+
+See [docs/punjabi_rag.md](docs/punjabi_rag.md) for setup details.
 
 ## Quick start
 ```bash
