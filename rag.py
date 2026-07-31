@@ -11,9 +11,10 @@ from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
 
 # Preferred Ollama models for Punjabi grounded answers (CPU-friendly first).
+# Note: on CPU, qwen2.5:1.5b often follows Gurmukhi prompts more reliably than :3b.
 PUNJABI_PREFERRED_LLMS = [
-    "qwen2.5:3b",
     "qwen2.5:1.5b",
+    "qwen2.5:3b",
     "qwen2.5:7b",
     "gemma3:4b",
     "llama3.1",
@@ -118,11 +119,46 @@ def split_documents(
     return splitter.split_documents(documents=documents)
 
 
+def is_low_quality_gurmukhi_answer(text: str) -> bool:
+    """Detect empty, non-Gurmukhi, or heavily repetitive model output."""
+    if not text or not text.strip():
+        return True
+    stats = gurmukhi_stats(text)
+    if stats["ratio"] < 0.35:
+        return True
+    # Collapse whitespace and look for repeated 12+ char phrases (looping models).
+    compact = " ".join(text.split())
+    if len(compact) > 80:
+        window = 18
+        seen = {}
+        for i in range(0, max(1, len(compact) - window)):
+            frag = compact[i : i + window]
+            seen[frag] = seen.get(frag, 0) + 1
+            if seen[frag] >= 4:
+                return True
+    return False
+
+
+def extractive_punjabi_answer(docs: list, query: str) -> str:
+    """Grounded fallback: quote the top retrieved passage (FAISS already ranked it)."""
+    if not docs:
+        return "ਇਸ ਸੰਦਰਭ ਵਿੱਚ ਜਾਣਕਾਰੀ ਉਪਲਬਧ ਨਹੀਂ।"
+    passage = (docs[0].page_content or "").strip()
+    sentences = [s.strip() for s in passage.replace("?", "।").split("।") if s.strip()]
+    if not sentences:
+        snippet = passage
+    else:
+        snippet = "। ".join(sentences[:2]) + "।"
+    if len(snippet) > 420:
+        snippet = snippet[:420].rstrip() + "…"
+    return f"ਸੰਦਰਭ ਅਨੁਸਾਰ: {snippet}"
+
+
 def answer_prompt(language: str, context: str, query: str) -> str:
     if language == "punjabi":
-        return f"""ਤੁਸੀਂ ਇੱਕ ਧਿਆਨਵਾਨ RAG ਸਹਾਇਕ ਹੋ। ਸਿਰਫ਼ ਹੇਠਾਂ ਦਿੱਤੇ ਸੰਦਰਭ ਤੋਂ ਹੀ ਜਵਾਬ ਦਿਓ।
-ਜੇ ਸੰਦਰਭ ਵਿੱਚ ਜਵਾਬ ਨਾ ਹੋਵੇ ਤਾਂ ਸਾਫ਼ ਕਹੋ ਕਿ ਜਾਣਕਾਰੀ ਉਪਲਬਧ ਨਹੀਂ।
-ਪੂਰਾ ਜਵਾਬ ਪੰਜਾਬੀ ਵਿੱਚ ਗੁਰਮੁਖੀ ਲਿਪੀ ਵਿੱਚ ਲਿਖੋ। ਅੰਗਰੇਜ਼ੀ ਵਿੱਚ ਜਵਾਬ ਨਾ ਦਿਓ।
+        return f"""ਤੁਸੀਂ ਇੱਕ RAG ਸਹਾਇਕ ਹੋ। ਸਿਰਫ਼ ਸੰਦਰਭ ਵਿੱਚੋਂ ਹੀ ਜਵਾਬ ਦਿਓ।
+ਨਾਂ ਅਤੇ ਤਾਰੀਖਾਂ ਸੰਦਰਭ ਵਾਂਗ ਹੀ ਲਿਖੋ। 1-2 ਛੋਟੇ ਵਾਕ ਲਿਖੋ।
+ਪੂਰਾ ਜਵਾਬ ਗੁਰਮੁਖੀ ਪੰਜਾਬੀ ਵਿੱਚ ਹੋਵੇ।
 
 ਸੰਦਰਭ:
 {context}

@@ -226,7 +226,7 @@ with st.sidebar:
         available_llm_models = rag_helpers.prefer_models(
             available_llm_models, rag_helpers.PUNJABI_PREFERRED_LLMS
         )
-        st.caption("Punjabi tip: prefer `qwen2.5:3b` (or larger) for better Gurmukhi answers.")
+        st.caption("Punjabi tip: prefer `qwen2.5:1.5b` or `qwen2.5:3b` for Gurmukhi answers.")
     model_name = st.selectbox(
         "LLM Model",
         available_llm_models,
@@ -245,6 +245,17 @@ with st.sidebar:
         index=0,
         help="Use bge-m3 for Punjabi/Gurmukhi retrieval (multilingual)."
     )
+
+    if language == "punjabi":
+        punjabi_answer_style = st.radio(
+            "Punjabi answer style",
+            ["Grounded quote (recommended)", "LLM paraphrase"],
+            index=0,
+            help="Grounded quote returns the best retrieved Gurmukhi passage (fast & faithful). "
+                 "LLM paraphrase needs a stronger model (qwen2.5:3b+) and may fall back to a quote.",
+        )
+    else:
+        punjabi_answer_style = "LLM paraphrase"
 
     st.markdown("---")
     st.header("🔬 RAG Mode")
@@ -390,14 +401,21 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
                 )
                 st.success("✓ Vector store created and saved")
 
-        st.session_state.retriever = persisted_vectorstore.as_retriever(search_kwargs={"k": 8})
+        st.session_state.retriever = persisted_vectorstore.as_retriever(
+            search_kwargs={"k": 4 if language == "punjabi" else 8}
+        )
         st.session_state.vectorstore = persisted_vectorstore
 
         with st.spinner("Loading LLM model..."):
-            st.session_state.llm = OllamaLLM(
-                model=model_name,
-                base_url=OLLAMA_HOST,
-            )
+            llm_kwargs = {
+                "model": model_name,
+                "base_url": OLLAMA_HOST,
+                "temperature": 0.1 if language == "punjabi" else 0.7,
+            }
+            if language == "punjabi":
+                # Cap length to reduce looping on small multilingual models.
+                llm_kwargs["num_predict"] = 120
+            st.session_state.llm = OllamaLLM(**llm_kwargs)
             st.success(f"✓ LLM model ({model_name}) loaded")
 
         st.session_state.initialized = True
@@ -425,40 +443,84 @@ def context_stats(docs: list, query: str) -> dict:
     }
 
 
-def run_llm_streaming(llm, prompt_text: str) -> tuple:
+def run_llm_streaming(llm, prompt_text: str, *, prefer_invoke: bool = False) -> tuple:
     """
     Stream LLM output to capture TTFT and E2E latency.
     Returns (response, ttft_ms, llm_e2e_ms, output_tokens)
+
+    prefer_invoke=True skips streaming (more reliable for Gurmukhi on small CPU models).
     """
     t0 = time.time()
     t_first = None
     full_response = ""
-    try:
-        for chunk in llm.stream(prompt_text):
-            if t_first is None:
-                t_first = time.time()
-            full_response += str(chunk)
-        llm_e2e_ms = round((time.time() - t0) * 1000)
-    except Exception:
-        # Fallback if streaming not supported
-        full_response = llm.invoke(prompt_text)
+    if prefer_invoke:
+        full_response = str(llm.invoke(prompt_text) or "")
         llm_e2e_ms = round((time.time() - t0) * 1000)
         t_first = t0
+    else:
+        try:
+            for chunk in llm.stream(prompt_text):
+                if t_first is None:
+                    t_first = time.time()
+                full_response += str(chunk)
+            llm_e2e_ms = round((time.time() - t0) * 1000)
+            # Empty/garbled streams → fall back to invoke
+            if not full_response.strip():
+                raise RuntimeError("empty stream")
+        except Exception:
+            full_response = str(llm.invoke(prompt_text) or "")
+            llm_e2e_ms = round((time.time() - t0) * 1000)
+            t_first = t0
     ttft_ms = round((t_first - t0) * 1000) if t_first else 0
     output_tokens = max(1, len(full_response) // 4)
     return full_response, ttft_ms, llm_e2e_ms, output_tokens
 
 
-def run_standard_rag(query: str, retriever, llm, language: str = "english") -> tuple:
+def run_standard_rag(
+    query: str,
+    retriever,
+    llm,
+    language: str = "english",
+    punjabi_answer_style: str = "LLM paraphrase",
+) -> tuple:
     """Standard RAG. Returns (answer, docs, stats, perf) where perf = {ttft_ms, e2e_ms, input_tokens, output_tokens}."""
     t_retrieve = time.time()
     docs = retriever.invoke(query)
     retrieve_ms = round((time.time() - t_retrieve) * 1000)
 
-    context = "\n\n".join([d.page_content for d in docs])
+    # Small multilingual models handle shorter Punjabi contexts more reliably.
+    use_docs = docs[:2] if language == "punjabi" else docs
+
+    if language == "punjabi" and punjabi_answer_style.startswith("Grounded quote"):
+        answer = rag_helpers.extractive_punjabi_answer(use_docs, query)
+        stats = context_stats(use_docs, query)
+        perf = {
+            "ttft_ms": retrieve_ms,
+            "e2e_ms": retrieve_ms,
+            "retrieve_ms": retrieve_ms,
+            "input_tokens": stats["est_total_prompt_tokens"],
+            "output_tokens": max(1, len(answer) // 4),
+        }
+        return answer, use_docs, stats, perf
+
+    context = "\n\n".join([d.page_content for d in use_docs])
     prompt_text = rag_helpers.answer_prompt(language, context, query)
-    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
-    stats = context_stats(docs, query)
+    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(
+        llm, prompt_text, prefer_invoke=(language == "punjabi")
+    )
+    if language == "punjabi":
+        extractive = rag_helpers.extractive_punjabi_answer(use_docs, query)
+        # Prefer extractive when generation is empty, non-Gurmukhi, looping, or weakly grounded.
+        if rag_helpers.is_low_quality_gurmukhi_answer(answer):
+            answer = extractive
+        else:
+            # Require at least some token overlap with retrieved context.
+            ctx_tokens = set(context.replace("।", " ").split())
+            ans_tokens = set(answer.replace("।", " ").split())
+            if len(ctx_tokens & ans_tokens) < 3:
+                answer = extractive
+        output_tokens = max(1, len(answer) // 4)
+    stats = context_stats(use_docs, query)
     perf = {
         "ttft_ms": retrieve_ms + ttft_ms,   # user-facing: includes retrieval wait
         "e2e_ms": retrieve_ms + llm_e2e_ms, # full round-trip
@@ -466,7 +528,7 @@ def run_standard_rag(query: str, retriever, llm, language: str = "english") -> t
         "input_tokens": stats["est_total_prompt_tokens"],
         "output_tokens": output_tokens,
     }
-    return answer, docs, stats, perf
+    return answer, use_docs, stats, perf
 
 def score_chunk_relevance(llm, query: str, chunk: str, language: str = "english") -> bool:
     """Ask the LLM whether a chunk is relevant to the query. Returns True/False."""
@@ -533,7 +595,12 @@ def run_refrag(query: str, vectorstore, llm, top_k: int, min_relevant: int, lang
     context = "\n\n".join([doc.page_content for doc in final_docs])
     effective_query = reformulated_query or query
     prompt_text = rag_helpers.answer_prompt(language, context, effective_query)
-    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(llm, prompt_text)
+    answer, ttft_ms, llm_e2e_ms, output_tokens = run_llm_streaming(
+        llm, prompt_text, prefer_invoke=(language == "punjabi")
+    )
+    if language == "punjabi" and rag_helpers.is_low_quality_gurmukhi_answer(answer):
+        answer = rag_helpers.extractive_punjabi_answer(final_docs, query)
+        output_tokens = max(1, len(answer) // 4)
     stats = context_stats(final_docs, effective_query)
     perf = {
         "ttft_ms": retrieve_ms + ttft_ms,
@@ -611,7 +678,11 @@ if st.session_state.initialized:
             with st.spinner("Running Standard RAG..."):
                 try:
                     rag_answer, rag_docs, rag_stats, rag_perf = run_standard_rag(
-                        query, st.session_state.retriever, st.session_state.llm, language=active_lang
+                        query,
+                        st.session_state.retriever,
+                        st.session_state.llm,
+                        language=active_lang,
+                        punjabi_answer_style=punjabi_answer_style,
                     )
                 except Exception as e:
                     st.error(f"❌ Standard RAG error: {e}")
@@ -723,6 +794,7 @@ if st.session_state.initialized:
                         st.session_state.retriever,
                         st.session_state.llm,
                         language=active_lang,
+                        punjabi_answer_style=punjabi_answer_style,
                     )
                     st.session_state.last_perf = perf
                     st.session_state.last_mode = "Standard RAG"
