@@ -7,8 +7,24 @@ import time
 
 import rag as rag_helpers
 
+# Bump when Cloud may be serving a stale module mix after deploys.
+APP_BUILD = "2026-08-01-filter-fix"
+
 # MUST be the first Streamlit command (Cloud fails otherwise).
 st.set_page_config(page_title="Sikh & Punjabi RAG", layout="wide")
+
+
+def filter_nonempty_documents(documents, *, min_chars: int = 20):
+    """Prefer rag.py helper; fall back if Cloud is on a stale rag module."""
+    fn = getattr(rag_helpers, "filter_nonempty_documents", None)
+    if callable(fn):
+        return fn(documents, min_chars=min_chars)
+    out = []
+    for doc in documents or []:
+        text = (getattr(doc, "page_content", None) or "").strip()
+        if len(text) >= min_chars:
+            out.append(doc)
+    return out
 
 # Get Ollama configuration from Streamlit secrets (for cloud) or environment
 try:
@@ -71,6 +87,7 @@ st.markdown("""
 
 # Answer script: Punjabi Gurmukhi vs Punjabi English (Roman). RAG is always Punjabi.
 with st.sidebar:
+    st.caption(f"build `{APP_BUILD}` · rag `{getattr(rag_helpers, 'RAG_BUILD', 'legacy')}`")
     st.header("🌐 Script / ਲਿਪੀ")
     script_label = st.radio(
         "Answer script",
@@ -448,7 +465,7 @@ if st.button("🚀 Initialize RAG Pipeline", key="init_button"):
             st.caption(f"Detected some Gurmukhi in the source ({stats['ratio']:.0%} of letters).")
 
         # Drop blank OCR pages before splitting/embedding (prevents FAISS crash)
-        documents = rag_helpers.filter_nonempty_documents(documents, min_chars=20)
+        documents = filter_nonempty_documents(documents, min_chars=20)
         if not documents:
             st.error(
                 "❌ No readable text found after loading/OCR. "

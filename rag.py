@@ -6,6 +6,9 @@ import os
 import tempfile
 from typing import Iterable, List, Tuple
 
+# Bump alongside streamlit_app.APP_BUILD so Cloud deploys refresh both modules.
+RAG_BUILD = "2026-08-01-filter-fix"
+
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter
